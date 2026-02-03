@@ -38,19 +38,15 @@ This document is the *starting* execution plan for the desktop agent. We’ll up
   - Produces daily aggregates + JSON snapshot
   - Writes results back to SQLite and/or cache files
 
-### 1.2 Modules (proposed)
+### 1.2 Modules (actual structure)
 - `agent.py` — entry point, lifecycle, orchestrates collectors
-- `core/config.py` — config loading + validation (yaml)
-- `core/logging.py` — structured logging
-- `core/clock.py` — time helpers (UTC/local, day boundaries)
-- `store/db.py` — SQLite connection, migrations, helpers
-- `collectors/window_focus.py` — active app/window tracker
-- `collectors/input_activity.py` — keystroke counts + idle detector
-- `profiling/profile_engine.py` — daily aggregation pipeline
-- `profiling/rules.py` — mapping rules (tool detection, distraction categories)
-- `profiling/sanitization.py` — privacy filters (hashing/stripping)
+- `config/config.py` — config loading from YAML
+- `storage/db.py` — SQLite connection, migrations, helpers
+- `observer/app_focus.py` — active app/window tracker (Windows)
+- `profiler/profile_engine.py` — daily aggregation pipeline (coming)
+- `profiler/rules.py` — mapping rules (coming)
 
-We’ll keep it simple: a single process, periodic loop, small modules.
+We keep it simple: single process, periodic loop, small focused modules.
 
 ### 1.3 Data flow
 1) Collectors write raw events → SQLite
@@ -132,49 +128,50 @@ Use WAL mode, foreign keys on, and store timestamps in ISO8601 UTC.
 ---
 
 ## 4) OS + library choices (Windows-first)
-You’re on Windows, so plan v0 around Windows support.
+You're on Windows. Current approach:
+- **Active window:** `ctypes` Win32 APIs (no external dependencies)
+  - Uses: `GetForegroundWindow()`, `GetWindowTextLengthW()`, `GetModuleFileNameExW()`
+  - Lightweight, no extra packages needed
+- **Keyboard/mouse activity (coming):**
+  - Idle: Win32 `GetLastInputInfo()` (least invasive)
+  - Typing: optional `pynput` (privacy-gated, opt-in)
 
-**Recommended approach (v0):**
-- Active window: `pywin32` (Win32 APIs) or `ctypes`-based calls
-- Keyboard/mouse activity:
-  - If you only need idle time: Win32 `GetLastInputInfo` is enough (no hooks)
-  - If you need keystroke counts: consider `pynput` (be careful: it’s more sensitive privacy-wise)
-
-Start with idle detection via `GetLastInputInfo` (least invasive), then add keystroke counting as opt-in.
+Current dependencies:
+- `PyYAML==6.0` — config parsing
 
 ---
 
 ## 5) Milestones (step-by-step build order)
 This is the *base execution order* that keeps you shipping usable increments.
 
-### Milestone A — Agent skeleton + storage 
+### Milestone A — Agent skeleton + storage ✅ DONE
 **Outcome:** `python agent.py` runs continuously and writes to SQLite.
 - Project structure + venv
-- Config (`config.yaml`) + logger
-- DB layer (`store/db.py`) with migrations + WAL
+- Config (`config/config.yaml`) + loader
+- DB layer (`storage/db.py`) with migrations + WAL
 - Graceful shutdown + crash-safe session close
 
-### Milestone B — Focus tracking 
+### Milestone B — Focus tracking ✅ DONE
 **Outcome:** app focus sessions are accurate.
-- Sample active window every 1–2s
+- Sample active window every 2s (configurable)
 - Detect focus change → close previous session, open new
-- Sanitize window context
-- Daily sanity report (CLI): top apps today
+- Sanitize window context (app_name + window_title)
+- Real-time database writes (no data loss on crash)
 
-### Milestone C — Idle + typing intensity 
+### Milestone C — Idle + typing intensity ⬜ NEXT
 **Outcome:** idle sessions and typing buckets fill reliably.
 - Idle detection from last input time (threshold configurable)
 - Optional keystroke counter (privacy gated)
 - Store per-30s buckets (configurable)
 
-### Milestone D — Profile engine v1 
+### Milestone D — Profile engine v1 ⬜ LATER
 **Outcome:** daily JSON snapshot generated from local DB.
 - Tool detection mapping (process → tool)
 - Productivity heuristics (focus/distracted/idle)
 - Skills signals (file extension / IDE context, confidence)
 - Store daily snapshot JSON
 
-### Milestone E — Hardening 
+### Milestone E — Hardening ⬜ LATER
 **Outcome:** run-all-day reliability and privacy-proofing.
 - Deduplication / duration validation
 - Robust time handling (DST/local day boundaries)
@@ -205,20 +202,18 @@ Keep rules transparent and configurable.
 
 ---
 
-## 7) Implementation checklist (first runnable base)
-This is what you build *first* so you can iterate quickly.
+## 7) Implementation checklist (first runnable base) ✅ COMPLETE
 
-1) Create folders:
-   - `core/`, `store/`, `collectors/`, `profiling/`, `plan/`
-2) Add minimal config (`config.yaml`) with:
-   - `sample_interval_sec`, `idle_threshold_sec`, `typing_bucket_sec`, `privacy_mode`
-3) Implement `store/db.py`:
-   - connect, set WAL, create tables if missing
-   - helper methods: start_session, end_session, insert_typing_bucket, etc.
-4) Implement `collectors/window_focus.py`:
-   - `get_active_app()` + `get_active_window_title()` (sanitized)
-5) Implement idle detection (Win32 `GetLastInputInfo`) first
-6) Wire into `agent.py` loop with graceful shutdown
+Current project state:
+- ✅ Folder structure: `config/`, `storage/`, `observer/`, `profiler/`, `logs/`
+- ✅ Config (`config/config.yaml` + `config/config.py`)
+- ✅ Database (`storage/db.py`) with app_sessions table
+- ✅ Window tracker (`observer/app_focus.py`)
+- ✅ Main loop (`agent.py`) with graceful shutdown
+- ✅ Dependencies (`requirements.txt`)
+- ✅ Git exclusions (`.gitignore`)
+
+Ready to test: `python agent.py`
 
 ---
 
@@ -230,9 +225,11 @@ This is what you build *first* so you can iterate quickly.
 
 ---
 
-## 9) Next update to this plan
-When you’re ready, we’ll extend this plan with:
-- A concrete folder structure + initial files list
-- Exact Windows API/library choice (pywin32 vs ctypes)
-- Minimal CLI commands (`agent run`, `agent profile --date today`)
-- Indexes and migration strategy
+## 9) Progress & Updates
+
+**Latest:** Milestone A & B complete (2026-02-03)
+- Agent running and collecting app_sessions in real-time
+- Config system working
+- SQLite database stable (WAL mode)
+- Windows app detection working (ctypes Win32 APIs)
+- Ready for Milestone C (idle detection + typing)

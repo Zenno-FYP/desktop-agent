@@ -1,0 +1,14 @@
+# Zenno Desktop Agent Configuration
+
+# Sampling interval in seconds (how often to check active window)
+sample_interval_sec: 2
+
+# Idle threshold in seconds (inactivity before marking as idle)
+idle_threshold_sec: 60
+
+# Privacy mode: strict (no titles) or relaxed (hashed titles)
+privacy_mode: strict
+
+# Database path
+db:
+  path: ./storage/agent.db
