@@ -1,1 +1,5 @@
 PyYAML
+keyboard>=0.13.5
+pynput>=1.7.6
+watchdog>=3.0.0
+psutil>=5.9.0
