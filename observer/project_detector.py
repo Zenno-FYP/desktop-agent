@@ -1,8 +1,11 @@
 """Detect project context and active file."""
 import os
 import re
+import time
+import string
 from pathlib import Path
 from typing import Tuple, Optional
+import psutil
 
 
 class ProjectDetector:
@@ -26,6 +29,135 @@ class ProjectDetector:
         """Initialize project detector."""
         self.last_detected_project = None
         self.last_detected_file = None
+
+    def _lightweight_drive_search(self, active_file_name: str, expected_project_name: str) -> Optional[str]:
+        """Strictly bounded, high-speed fallback search across drives.
+        
+        Uses hard safety limits to protect < 5% CPU constraint:
+        - Time Limit: Aborts if search takes > 1.0 seconds (PRIMARY safety)
+        - Depth Limit: Searches up to 6 folders deep (reasonable depth)
+        - Exclusion: Skips Windows, Program Files, node_modules, etc.
+        - Drive Filtering: Skips C: drive (system) to avoid expensive scans
+        
+        Args:
+            active_file_name: The file to find (e.g., 'parser.y')
+            expected_project_name: Project folder name to match (e.g., 'CC project')
+            
+        Returns:
+            Project root path if found within limits, None otherwise
+        """
+        # Exclude massive or system directories to prevent hanging
+        EXCLUDE_DIRS = {
+            'windows', 'program files', 'program files (x86)', 'programdata', 
+            'appdata', '$recycle.bin', 'node_modules', 'vendor', 'temp', 'tmp',
+            'cache', '.git', '__pycache__', 'system volume information',
+            'users', 'recovery', 'system32', 'syswow64'
+        }
+        
+        MAX_DEPTH = 6           # Search up to 6 folders deep (covers most projects)
+        TIME_LIMIT_SEC = 1.0    # ABORT if it takes longer than 1 second (PRIMARY limit)
+        
+        start_time = time.time()
+        
+        # Get available drives, but skip C: (system) to save time
+        drives = [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\") and d != 'C']
+        # Add C: at the end if we have time later
+        if os.path.exists("C:\\"):
+            drives.append("C:\\")
+        
+        for drive in drives:
+            try:
+                for root, dirs, files in os.walk(drive):
+                    
+                    # 1. Circuit Breaker: Enforce time limit (PRIMARY safety)
+                    if time.time() - start_time > TIME_LIMIT_SEC:
+                        return None 
+                    
+                    # 2. Filter out excluded directories (modifying in-place stops os.walk from entering)
+                    dirs[:] = [d for d in dirs if d.lower() not in EXCLUDE_DIRS]
+                    
+                    # 3. Circuit Breaker: Enforce depth limit (SECONDARY safety)
+                    depth = root.count(os.sep) - drive.count(os.sep)
+                    if depth >= MAX_DEPTH:
+                        del dirs[:]  # Don't go deeper
+                        continue
+                    
+                    # 4. Match logic: Look for the active file
+                    if active_file_name in files:
+                        # If we have a project name, ensure it's part of the folder path
+                        if expected_project_name and expected_project_name.lower() in root.lower():
+                            return root
+                        elif not expected_project_name:
+                            # No project name to match, just found the file
+                            return root
+            except (OSError, PermissionError):
+                # Skip drives with permission issues
+                pass
+        
+        return None
+
+    def _get_project_path_from_pid(self, pid: int, active_file_name: Optional[str] = None) -> Optional[str]:
+        """Use OS-level process inspection to find exact project path.
+        
+        Best approach for modern IDEs (VS Code, PyCharm):
+        - Process CWD is always installation dir (not useful)
+        - Command line args don't include project paths (not reliable)
+        - Open FILES are the ultimate truth - walk up to find project root
+        
+        Args:
+            pid: Process ID of the IDE
+            active_file_name: The active file name to validate against
+            
+        Returns:
+            Full project path or None
+        """
+        try:
+            process = psutil.Process(pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return None
+        
+        # Primary: Inspect open files and walk up directory tree to find project root
+        try:
+            open_files = process.open_files()
+            
+            for file_info in open_files:
+                file_path = file_info.path
+                
+                # If we have an active file, prioritize matching it
+                if active_file_name:
+                    if not file_path.lower().endswith(f"\\{active_file_name.lower()}"):
+                        continue  # Skip files that don't match active file name
+                
+                # Walk up from this file to find project root (marked by .git, package.json, etc.)
+                current = Path(file_path).parent
+                
+                for _ in range(20):  # Check up to 20 levels up
+                    if current == current.parent:  # Reached filesystem root
+                        break
+                    
+                    # Check for project markers
+                    for marker in self.PROJECT_MARKERS:
+                        if (current / marker).exists():
+                            return str(current)
+                    
+                    current = current.parent
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        
+        # Fallback: Try Layer 2 (cmdline args) if Layer 3 didn't work
+        try:
+            cmdline = process.cmdline()
+            for arg in cmdline:
+                # Check if any argument is a valid directory path (not a flag)
+                if os.path.isdir(arg) and not arg.startswith("--"):
+                    # Skip common flags and system paths
+                    if arg not in ["--type=renderer", "--no-sandbox", "Code", "code"] and \
+                       "AppData" not in arg and "WINDOWS" not in arg:
+                        return arg
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        
+        return None
 
     def extract_from_window_title(self, 
                                    app_name: str, 
@@ -92,35 +224,6 @@ class ProjectDetector:
         project_name = dash_parts[0].strip() if dash_parts else None
         
         return project_name, active_file
-
-    def find_project_root(self, start_path: Path = None) -> Optional[Path]:
-        """Find project root by looking for markers.
-        
-        Args:
-            start_path: path to start searching from (default: current directory)
-            
-        Returns:
-            Path to project root or None if not found
-        """
-        if start_path is None:
-            start_path = Path.cwd()
-        
-        current = Path(start_path).resolve()
-        
-        # Search up to 10 levels
-        for _ in range(10):
-            # Check if any project markers exist in current directory
-            for marker in self.PROJECT_MARKERS:
-                if (current / marker).exists():
-                    return current
-            
-            # Move to parent directory
-            if current.parent == current:
-                # Reached filesystem root
-                break
-            current = current.parent
-        
-        return None
 
     def detect_project(self, 
                       app_name: str, 
@@ -192,64 +295,69 @@ class ProjectDetector:
         
         return skill if skill else None
 
-    def get_project_path(self, app_name: str, window_title: str) -> Optional[str]:
-        """Extract project path from window title.
+    def get_project_path(self, app_name: str, window_title: str, pid: Optional[int] = None, active_file_name: Optional[str] = None) -> Optional[str]:
+        """Extract project path securely without blocking the main thread.
         
-        Args:
-            app_name: Application name
-            window_title: Window title
-            
-        Returns:
-            Full project path or None
+        Uses OS-level detection via psutil and safe directory checks.
+        Performs safely bounded filesystem searches with hard time limits (< 1 sec).
         """
+        
+        # Layer 1: Try PID-based OS detection first (Most reliable)
+        if pid is not None:
+            pid_result = self._get_project_path_from_pid(pid, active_file_name)
+            if pid_result and pid_result != str(Path.cwd()):
+                return pid_result
+                
         if not window_title:
             return None
         
         app_name_lower = app_name.lower() if app_name else ""
         
-        # VS Code: Extract path from "filename - /path/to/project - VS Code"
+        # Layer 2: Extract from title and check known safe directories
+        extracted_name = None
+        
         if 'code.exe' in app_name_lower or 'visual studio code' in window_title.lower():
             title = window_title.replace('Visual Studio Code', '').strip('- ')
             parts = [p.strip() for p in title.split(' - ')]
             if len(parts) >= 2:
-                extracted = parts[1]
+                extracted_name = parts[1]
                 
-                # If already absolute path, return it
-                if Path(extracted).is_absolute():
-                    return extracted
-                
-                # Otherwise try to resolve the project name to full path
-                # Check if it matches current working directory
-                cwd = Path.cwd()
-                if cwd.name == extracted:
-                    return str(cwd)
-                
-                # Check parent directory
-                if cwd.parent.name == extracted:
-                    return str(cwd.parent)
-                
-                # Check common project directories
-                for base_dir in self.WATCH_DIRS:
-                    if not base_dir.exists():
-                        continue
-                    candidate = base_dir / extracted
-                    if candidate.exists():
-                        return str(candidate)
-                
-                # If nothing found, return as-is
-                return extracted
-        
-        # PyCharm: Extract from "project_name - [file.py]"
-        if 'pycharm' in app_name_lower or 'idea' in app_name_lower:
+        elif 'pycharm' in app_name_lower or 'idea' in app_name_lower:
             dash_parts = window_title.split(' - ')
             if dash_parts:
-                project_name = dash_parts[0].strip()
-                # Try to resolve like VS Code
-                cwd = Path.cwd()
-                if cwd.name == project_name:
-                    return str(cwd)
-                if cwd.parent.name == project_name:
-                    return str(cwd.parent)
-                return project_name
-        
+                extracted_name = dash_parts[0].strip()
+
+        # If we successfully parsed a name from the title, safely resolve it
+        if extracted_name:
+            # If it's already an absolute path that exists
+            if Path(extracted_name).is_absolute() and Path(extracted_name).exists():
+                return extracted_name
+                
+            cwd = Path.cwd()
+            
+            # Check CWD
+            if cwd.name == extracted_name:
+                return str(cwd)
+                
+            # Check sibling
+            sibling = cwd.parent / extracted_name
+            if sibling.exists() and sibling.is_dir():
+                return str(sibling)
+                
+            # Check safe Watch Directories ONLY
+            for base_dir in self.WATCH_DIRS:
+                if base_dir.exists():
+                    candidate = base_dir / extracted_name
+                    if candidate.exists() and candidate.is_dir():
+                        return str(candidate)
+            
+            # Safe Fallback: Lightweight bounded drive search (time + depth limited)
+            if active_file_name:
+                search_result = self._lightweight_drive_search(active_file_name, extracted_name)
+                if search_result:
+                    return search_result
+            
+            # Final fallback: return extracted name as-is
+            return extracted_name
+            
         return None

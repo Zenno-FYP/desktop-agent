@@ -5,6 +5,7 @@ import time
 import sys
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -20,16 +21,18 @@ from observer.project_detector import ProjectDetector
 class ActivitySession:
     """Track a single application/window session with all behavioral data."""
 
-    def __init__(self, app_name: str, window_title: str):
+    def __init__(self, app_name: str, window_title: str, pid: Optional[int] = None):
         """Initialize new activity session.
         
         Args:
             app_name: Application name
             window_title: Window title
+            pid: Process ID (optional)
         """
         self.start_time = datetime.utcnow().isoformat()
         self.app_name = app_name
         self.window_title = window_title
+        self.pid = pid
         
         # Initialize behavioral tracking
         self.metrics = BehavioralMetrics()
@@ -62,7 +65,7 @@ class ActivitySession:
         
         # Use current file info (may have been updated by tab switch detection)
         detected_language = self.project_detector.get_detected_language(self.current_file)
-        project_path = self.project_detector.get_project_path(self.app_name, self.window_title)
+        project_path = self.project_detector.get_project_path(self.app_name, self.window_title, self.pid, self.current_file)
         
         # Compile activity log entry
         activity_data = {
@@ -156,7 +159,7 @@ class DesktopAgent:
         try:
             while True:
                 # Get active window
-                app_name, window_title = get_active_window()
+                app_name, window_title, pid = get_active_window()
                 
                 # Handle app/window change (e.g., VS Code → Chrome)
                 if app_name != self.current_app:
@@ -164,7 +167,7 @@ class DesktopAgent:
                         self._flush_session()
                     
                     if app_name:
-                        self.current_session = ActivitySession(app_name, window_title)
+                        self.current_session = ActivitySession(app_name, window_title, pid)
                         self.current_app = app_name
                 
                 # Handle file change within same app (e.g., Tab switch in VS Code)
@@ -174,7 +177,7 @@ class DesktopAgent:
                         # Flush current file's session
                         self._flush_session()
                         # Start new file session (same app, different file)
-                        self.current_session = ActivitySession(app_name, window_title)
+                        self.current_session = ActivitySession(app_name, window_title, pid)
                         new_file = self.current_session.current_file
                         print(f"[Tab Switch] {old_file} → {new_file}")
                     else:
