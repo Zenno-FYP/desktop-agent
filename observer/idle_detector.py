@@ -59,8 +59,14 @@ class IdleDetector:
         if inactivity_duration >= self.idle_threshold_sec:
             if self.idle_start_time is None:
                 self.idle_start_time = current_time - inactivity_duration
-            # Update accumulated idle time
+            # Update accumulated idle time (from idle start to now)
             self.total_idle_sec = current_time - self.idle_start_time
+        else:
+            # User is active, finalize any idle period
+            if self.idle_start_time is not None:
+                idle_duration = current_time - self.idle_start_time
+                self.total_idle_sec = max(self.total_idle_sec, idle_duration)
+                self.idle_start_time = None
         
         return self.total_idle_sec
 

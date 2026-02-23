@@ -147,14 +147,16 @@ class ProjectDetector:
         return project_name or self.last_detected_project, \
                active_file or self.last_detected_file
 
-    def get_detected_skills(self, active_file: Optional[str]) -> Optional[str]:
-        """Infer programming skills/languages from file extension.
+
+
+    def get_detected_language(self, active_file: Optional[str]) -> Optional[str]:
+        """Detect programming language from file extension.
         
         Args:
             active_file: Active filename (e.g., 'main.py')
             
         Returns:
-            Comma-separated list of detected skills or None
+            Programming language or None
         """
         if not active_file:
             return None

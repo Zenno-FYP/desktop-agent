@@ -49,7 +49,7 @@ class Database:
                 -- Extracted Context
                 project_name TEXT, 
                 active_file TEXT,
-                detected_skills TEXT, 
+                detected_language TEXT,
                 
                 -- Behavioral Signals (Features for ML Retraining)
                 typing_intensity REAL DEFAULT 0.0,    -- Keystrokes per minute (KPM)
@@ -96,7 +96,7 @@ class Database:
             'duration_sec': activity_data['duration_sec'],
             'project_name': activity_data.get('project_name'),
             'active_file': activity_data.get('active_file'),
-            'detected_skills': activity_data.get('detected_skills'),
+            'detected_language': activity_data.get('detected_language'),
             'typing_intensity': activity_data.get('typing_intensity', 0.0),
             'mouse_click_rate': activity_data.get('mouse_click_rate', 0.0),
             'mouse_scroll_events': activity_data.get('mouse_scroll_events', 0),
@@ -109,7 +109,7 @@ class Database:
             """
             INSERT INTO raw_activity_logs (
                 start_time, end_time, app_name, window_title, duration_sec,
-                project_name, active_file, detected_skills,
+                project_name, active_file, detected_language,
                 typing_intensity, mouse_click_rate, mouse_scroll_events, idle_duration_sec,
                 context_state, confidence_score
             )

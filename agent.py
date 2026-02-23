@@ -36,9 +36,14 @@ class ActivitySession:
         self.idle_detector = IdleDetector(idle_threshold_sec=5)
         self.project_detector = ProjectDetector()
         
+        # Track file changes (for tab switching)
+        project, file = self.project_detector.detect_project(app_name, window_title)
+        self.current_file = file
+        self.current_project = project
+        
         self.metrics.start_listening()
         
-        print(f"[Session] Started: {app_name} | {window_title}")
+        print(f"[Session] Started: {app_name} | {window_title} | File: {file}")
 
     def collect_data(self) -> dict:
         """Collect all behavioral data for this session.
@@ -55,11 +60,8 @@ class ActivitySession:
         metrics = self.metrics.get_metrics()
         idle_metrics = self.idle_detector.get_idle_metrics()
         
-        # Project and file detection
-        project_name, active_file = self.project_detector.detect_project(
-            self.app_name, self.window_title
-        )
-        detected_skills = self.project_detector.get_detected_skills(active_file)
+        # Use current file info (may have been updated by tab switch detection)
+        detected_language = self.project_detector.get_detected_language(self.current_file)
         
         # Compile activity log entry
         activity_data = {
@@ -68,9 +70,9 @@ class ActivitySession:
             'app_name': self.app_name,
             'window_title': self.window_title,
             'duration_sec': duration_sec,
-            'project_name': project_name,
-            'active_file': active_file,
-            'detected_skills': detected_skills,
+            'project_name': self.current_project,
+            'active_file': self.current_file,
+            'detected_language': detected_language,
             'typing_intensity': metrics['typing_intensity'],
             'mouse_click_rate': metrics['mouse_click_rate'],
             'mouse_scroll_events': metrics['mouse_scroll_events'],
@@ -81,6 +83,37 @@ class ActivitySession:
         }
         
         return activity_data
+
+    def has_file_changed(self, new_window_title: str) -> bool:
+        """Check if the file changed (tab switch detection).
+        
+        Args:
+            new_window_title: New window title from active window
+            
+        Returns:
+            bool: True if file changed
+        """
+        _, new_file = self.project_detector.detect_project(self.app_name, new_window_title)
+        
+        # File changed if different from current
+        if new_file and new_file != self.current_file:
+            return True
+        
+        return False
+    
+    def update_file_context(self, new_window_title: str):
+        """Update current file/project info from window title.
+        
+        Args:
+            new_window_title: New window title from active window
+        """
+        project, file = self.project_detector.detect_project(
+            self.app_name, new_window_title
+        )
+        
+        self.current_file = file or self.current_file  # Keep old if not detected
+        self.current_project = project or self.current_project
+        self.window_title = new_window_title
 
     def end_session(self):
         """End the session and stop listening for inputs."""
@@ -123,7 +156,7 @@ class DesktopAgent:
                 # Get active window
                 app_name, window_title = get_active_window()
                 
-                # Handle app/window change
+                # Handle app/window change (e.g., VS Code → Chrome)
                 if app_name != self.current_app:
                     if self.current_session:
                         self._flush_session()
@@ -132,9 +165,25 @@ class DesktopAgent:
                         self.current_session = ActivitySession(app_name, window_title)
                         self.current_app = app_name
                 
+                # Handle file change within same app (e.g., Tab switch in VS Code)
+                elif self.current_session and window_title:
+                    if self.current_session.has_file_changed(window_title):
+                        old_file = self.current_session.current_file
+                        # Flush current file's session
+                        self._flush_session()
+                        # Start new file session (same app, different file)
+                        self.current_session = ActivitySession(app_name, window_title)
+                        new_file = self.current_session.current_file
+                        print(f"[Tab Switch] {old_file} → {new_file}")
+                    else:
+                        # Same file, just update window title
+                        self.current_session.update_file_context(window_title)
+                
                 # Update activity in current session (for idle detection)
                 if self.current_session:
-                    self.current_session.idle_detector.update_activity()
+                    # Get the actual last activity time from behavioral metrics
+                    last_activity = self.current_session.metrics.get_last_activity_time()
+                    self.current_session.idle_detector.update_activity(last_activity)
                 
                 # Periodic flush (even if app didn't change)
                 if time.time() - self.last_flush_time >= self.flush_interval:
@@ -165,12 +214,11 @@ class DesktopAgent:
             # Insert into database
             log_id = self.db.insert_activity_log(activity_data)
             
-            # Debug output
+            # Enhanced debug output with file info
             print(f"[DB] Inserted log #{log_id}: {activity_data['app_name']} "
-                  f"({activity_data['duration_sec']}s, "
-                  f"KPM:{activity_data['typing_intensity']:.1f}, "
-                  f"CPM:{activity_data['mouse_click_rate']:.1f}, "
-                  f"Idle:{activity_data['idle_duration_sec']}s)")
+                  f"({activity_data['duration_sec']}s) | File: {activity_data['active_file']} | "
+                  f"KPM:{activity_data['typing_intensity']:.1f} CPM:{activity_data['mouse_click_rate']:.1f} "
+                  f"Scrolls:{activity_data['mouse_scroll_events']} Idle:{activity_data['idle_duration_sec']}s")
             
             self.last_flush_time = time.time()
             self.current_session = None
