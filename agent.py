@@ -62,6 +62,7 @@ class ActivitySession:
         
         # Use current file info (may have been updated by tab switch detection)
         detected_language = self.project_detector.get_detected_language(self.current_file)
+        project_path = self.project_detector.get_project_path(self.app_name, self.window_title)
         
         # Compile activity log entry
         activity_data = {
@@ -71,6 +72,7 @@ class ActivitySession:
             'window_title': self.window_title,
             'duration_sec': duration_sec,
             'project_name': self.current_project,
+            'project_path': project_path,
             'active_file': self.current_file,
             'detected_language': detected_language,
             'typing_intensity': metrics['typing_intensity'],

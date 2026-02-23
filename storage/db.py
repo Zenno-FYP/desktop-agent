@@ -48,6 +48,7 @@ class Database:
                 
                 -- Extracted Context
                 project_name TEXT, 
+                project_path TEXT,
                 active_file TEXT,
                 detected_language TEXT,
                 
@@ -95,6 +96,7 @@ class Database:
             'window_title': activity_data.get('window_title', ''),
             'duration_sec': activity_data['duration_sec'],
             'project_name': activity_data.get('project_name'),
+            'project_path': activity_data.get('project_path'),
             'active_file': activity_data.get('active_file'),
             'detected_language': activity_data.get('detected_language'),
             'typing_intensity': activity_data.get('typing_intensity', 0.0),
@@ -109,11 +111,11 @@ class Database:
             """
             INSERT INTO raw_activity_logs (
                 start_time, end_time, app_name, window_title, duration_sec,
-                project_name, active_file, detected_language,
+                project_name, project_path, active_file, detected_language,
                 typing_intensity, mouse_click_rate, mouse_scroll_events, idle_duration_sec,
                 context_state, confidence_score
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             tuple(fields.values())
         )

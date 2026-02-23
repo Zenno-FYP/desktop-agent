@@ -191,3 +191,65 @@ class ProjectDetector:
         skill = skill_map.get(file_ext)
         
         return skill if skill else None
+
+    def get_project_path(self, app_name: str, window_title: str) -> Optional[str]:
+        """Extract project path from window title.
+        
+        Args:
+            app_name: Application name
+            window_title: Window title
+            
+        Returns:
+            Full project path or None
+        """
+        if not window_title:
+            return None
+        
+        app_name_lower = app_name.lower() if app_name else ""
+        
+        # VS Code: Extract path from "filename - /path/to/project - VS Code"
+        if 'code.exe' in app_name_lower or 'visual studio code' in window_title.lower():
+            title = window_title.replace('Visual Studio Code', '').strip('- ')
+            parts = [p.strip() for p in title.split(' - ')]
+            if len(parts) >= 2:
+                extracted = parts[1]
+                
+                # If already absolute path, return it
+                if Path(extracted).is_absolute():
+                    return extracted
+                
+                # Otherwise try to resolve the project name to full path
+                # Check if it matches current working directory
+                cwd = Path.cwd()
+                if cwd.name == extracted:
+                    return str(cwd)
+                
+                # Check parent directory
+                if cwd.parent.name == extracted:
+                    return str(cwd.parent)
+                
+                # Check common project directories
+                for base_dir in self.WATCH_DIRS:
+                    if not base_dir.exists():
+                        continue
+                    candidate = base_dir / extracted
+                    if candidate.exists():
+                        return str(candidate)
+                
+                # If nothing found, return as-is
+                return extracted
+        
+        # PyCharm: Extract from "project_name - [file.py]"
+        if 'pycharm' in app_name_lower or 'idea' in app_name_lower:
+            dash_parts = window_title.split(' - ')
+            if dash_parts:
+                project_name = dash_parts[0].strip()
+                # Try to resolve like VS Code
+                cwd = Path.cwd()
+                if cwd.name == project_name:
+                    return str(cwd)
+                if cwd.parent.name == project_name:
+                    return str(cwd.parent)
+                return project_name
+        
+        return None
