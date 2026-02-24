@@ -1,4 +1,4 @@
-# Desktop Activity Monitor - Phase 1, 2 & 3 Complete ✅
+# Desktop Activity Monitor - Phase 1, 2 Complete | Phase 3 Partial ✅
 
 A comprehensive Windows desktop monitoring system that tracks application usage, behavioral patterns, and infers contextual information about developer focus/distraction through real-time data collection, 5-minute block evaluation, and ML-based predictions.
 
@@ -8,7 +8,8 @@ A comprehensive Windows desktop monitoring system that tracks application usage,
 |-------|-----------|--------|----------|
 | **Phase 1** | Real-time data collection (monitor/) | ✅ COMPLETE (100%) | All behavioral signals captured |
 | **Phase 2** | 5-minute block evaluation (analyze/) | ✅ COMPLETE (100%) | Heuristic + app categorization |
-| **Phase 3** | ML model training (ml/) | ✅ COMPLETE (100%) | XGBoost 94% accuracy deployed |
+| **Phase 3A** | ML model training (ml/) | ✅ COMPLETE (100%) | XGBoost 94% accuracy deployed |
+| **Phase 3B** | ESM popup collection (ml/) | ⏳ PENDING (50%) | Framework design ready, code needed |
 | **Phase 4** | Advanced features (aggregate/) | ⏳ PENDING | Future enhancements |
 
 ## Quick Start

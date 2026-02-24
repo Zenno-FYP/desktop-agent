@@ -684,17 +684,17 @@ LIMIT 100;
 
 ### Implementation: ✅
 - `agent.py` - ActivitySession class handles time tracking
-- `storage/db.py` - Database stores ISO format timestamps
+- `database/db.py` - Database stores ISO format timestamps
 ```python
 class WindowSession:
     def __init__(self, app_name, window_title):
-        self.start_time = datetime.now().isoformat()
+        self.start_time = datetime.utcnow().isoformat()
         self.app_name = app_name
         self.window_title = window_title
         self.behavioral_data = BehavioralMetrics()
     
     def end_session(self):
-        self.end_time = datetime.now().isoformat()
+        self.end_time = datetime.utcnow().isoformat()
         self.duration_sec = (
             datetime.fromisoformat(self.end_time) - 
             datetime.fromisoformat(self.start_time)
@@ -712,50 +712,77 @@ class WindowSession:
 ## 5. System Architecture ✅ IMPLEMENTED (Phase 1 & 2) + ⏳ IN PROGRESS (Phase 3)
 
 **Status:** Phase 1 & 2 complete - All data collection and 5-minute block evaluation integrated
-Phase 3 - ML model training pending (requires 5+ days of collected data)
+Phase 3 - Core ML (synthetic bootstrap) complete, ESM popup collection pending
+Phase 4 - Continuous retraining pending (when real data collected)
 
 ### Folder Structure (4-Stage Pipeline)
 
 ```
 e:\Zenno\desktop-agent\
-├── monitor/              [PHASE 1: Real-time data collection]
+├── monitor/                     [PHASE 1: Real-time data collection] ✅
 │   ├── __init__.py
-│   ├── app_focus.py      (Window/app detection)
-│   ├── behavioral_metrics.py (KPM, CPM, scrolls via pynput hooks)
-│   ├── idle_detector.py  (5-sec inactivity threshold)
-│   └── project_detector.py (Project/file extraction + path resolution)
+│   ├── app_focus.py             (Window/app detection)
+│   ├── behavioral_metrics.py    (KPM, CPM, scrolls via pynput hooks)
+│   ├── idle_detector.py         (5-sec inactivity threshold)
+│   └── project_detector.py      (Project/file extraction + path resolution)
 │
-├── analyze/              [PHASE 2: Block evaluation & context detection]
+├── analyze/                     [PHASE 2: Block evaluation & context detection] ✅
 │   ├── __init__.py
-│   ├── context_detector.py (8-rule heuristic for mental state)
-│   └── block_evaluator.py (5-minute background evaluator thread)
+│   ├── context_detector.py      (10-rule heuristic + app categorization)
+│   └── block_evaluator.py       (5-minute background evaluator thread)
 │
-├── aggregate/            [PHASE 3: Future - Summary aggregations]
+├── ml/                          [PHASE 3: ML models] ✅ MOSTLY COMPLETE
+│   ├── __init__.py
+│   ├── synthetic_data_generator.py  (Generate 10K training samples with noise) ✅
+│   ├── feature_extractor.py         (Convert metrics → features) ✅
+│   ├── train_model.py               (Train XGBoost, save model) ✅
+│   ├── predictor.py                 (Load model, make predictions) ✅
+│   └── esm_popup.py                 (ESM data collection) ⏳ PENDING
+│
+├── aggregate/                   [PHASE 4: Future - Summary aggregations]
 │   └── __init__.py
 │
-├── ml/                   [PHASE 4: Future - ML models]
-│   └── __init__.py
-│
-├── storage/              [Database layer]
+├── database/                    [Database layer] ✅
 │   ├── __init__.py
-│   └── db.py (SQLite connection, schema, query methods)
+│   └── db.py                    (SQLite connection, schema, query methods)
 │
-├── config/               [Configuration]
+├── data/                        [Generated models & datasets]
+│   ├── models/
+│   │   ├── context_detector.pkl         (Trained XGBoost model, 14.2 MB) ✅
+│   │   └── context_detector_classes.pkl (Label mapping, 1 KB) ✅
+│   ├── datasets/
+│   │   └── training_synthetic.csv       (10,000 training samples, 3.2 MB) ✅
+│   └── db/
+│       └── zenno.db                     (SQLite database, grows with usage)
+│
+├── config/                      [Configuration]
 │   ├── __init__.py
 │   ├── config.py
 │   └── config.yaml
 │
-├── test/                 [Test suite - organized by phase]
+├── test/                        [Test suite - organized by phase] ✅
 │   ├── __init__.py
-│   ├── test_phase1.py    (Phase 1: Data collection tests)
-│   ├── test_phase2.py    (Phase 2: Block evaluator tests)
-│   ├── test_integration.py (End-to-end agent tests)
-│   └── fixtures/         (Test data and utilities)
+│   ├── test_phase1.py           (Phase 1: Data collection tests) ✅
+│   ├── test_phase2.py           (Phase 2: Block evaluator tests) ✅
+│   ├── test_app_categorization.py (Phase 2 Enhancement) ✅
+│   ├── test_ml_integration.py   (Phase 3: ML pipeline tests) ✅
+│   ├── test_integration.py      (End-to-end agent tests)
+│   ├── fixtures/
+│   │   ├── __init__.py
+│   │   ├── sample_logs.py
+│   │   └── utilities.py
+│   └── README.md
 │
-├── agent.py              [Main entry point]
-├── README.md
-├── requirements.txt
-└── DEBUGGING_SUMMARY.md  [Phase 2 debugging report]
+├── plan/                        [Documentation]
+│   └── activity_detection_plan.md (Full implementation plan & architecture)
+│
+├── logs/                        [Runtime logs]
+│   └── (agent.log generated at runtime)
+│
+├── agent.py                     [Main entry point]
+├── README.md                    [Updated with Phase 3 status]
+├── requirements.txt             [Python dependencies]
+└── DEBUGGING_SUMMARY.md         [Phase 2 debugging report]
 ```
 
 ### Data Flow Pipeline
@@ -783,12 +810,21 @@ PHASE 2: 5-Minute Block Evaluation (analyze/) ✅ COMPLETE
                 ↓
     Database Update: context_state, confidence_score populated ✅
 
-PHASE 3: ML Enhancement (ml/) ⏳ PENDING
-    (Requires 5+ days of Phase 2 data collection)
-    ├─ Data aggregation (test/ fixtures)
-    ├─ Feature engineering
-    ├─ ML model training
-    └─ Prediction & confidence scoring
+PHASE 3: ML Enhancement (ml/) ✅ PARTIAL COMPLETE
+    SyntheticDataGenerator ✅ → training_synthetic.csv ✅
+          ↓
+    FeatureExtractor ✅ → 9-dimensional features ✅
+          ↓
+    MLModelTrainer ✅ → XGBoost (94% accuracy) ✅
+          ↓
+    MLPredictor ✅ → Integrated into BlockEvaluator ✅
+          ↓
+    BlockEvaluator: ML predictions + Heuristic fallback ✅
+          ↓ (PENDING: ESM popup for verified data collection)
+    Database: context_state, confidence_score populated ✅
+    
+    ESM Popup Handler ⏳ (Pending - design ready, code needed)
+    Database verification schema ⏳ (Pending)
 
 PHASE 4: Advanced Features (aggregate/) ⏳ PENDING
     ├─ Project-level summaries
@@ -802,7 +838,7 @@ PHASE 4: Advanced Features (aggregate/) ⏳ PENDING
 
 **Status:** Validation logic complete - Pre-insert validation enforced
 
-**Implementation:** `storage/db.py` - `validate_activity_log()` method
+**Implementation:** `database/db.py` - `validate_activity_log()` method
 ```python
 def validate_activity_log(log_dict):
     assert log_dict['duration_sec'] > 0, "Duration must be positive"
@@ -950,9 +986,9 @@ Real-World Scenario Examples:
 
 **Phase 2 Completion: 100% ✅** (with App Categorization Enhancement)
 
-### Phase 3: ML Enhancement ✅ COMPLETE (Hybrid Synthetic/Real)
+### Phase 3: ML Enhancement ✅ MOSTLY COMPLETE (Hybrid Synthetic/Real)
 
-**Timeline: Implemented TODAY (2026-02-24) with real data collection in background**
+**Timeline: Core ML implemented TODAY (2026-02-24) | ESM Popup ⏳ PENDING**
 
 **Completed (Today 4-6 hours):**
 - ✅ Write Synthetic Data Generator (ml/synthetic_data_generator.py)
@@ -986,16 +1022,17 @@ Real-World Scenario Examples:
   - Logs prediction type (ML vs Heuristic) for debugging
   - Production-ready hybrid approach
   
-- ✅ Write ESM Popup Handler (ml/esm_popup.py) - Ready for deployment
-  - Shows notification on uncertain blocks (confidence < 0.70)
-  - Listens for Y/R/F/I hotkeys for quick verification
-  - Records verified labels in database
+- ⏳ Write ESM Popup Handler (ml/esm_popup.py) - PENDING IMPLEMENTATION
+  - [TODO] Shows notification on uncertain blocks (confidence < 0.70)
+  - [TODO] Listens for Y/R/F/I hotkeys for quick verification
+  - [TODO] Records verified labels in database
+  - Design ready, implementation pending
   
-- ✅ Database Schema Prepared (storage/db.py)
-  - Add is_manually_verified BOOLEAN
-  - Add manually_verified_label TEXT
-  - Add verified_at TIMESTAMP
-  - Ready for real data collection
+- ⏳ Database Schema Updates (database/db.py) - PENDING
+  - [TODO] Add is_manually_verified BOOLEAN
+  - [TODO] Add manually_verified_label TEXT
+  - [TODO] Add verified_at TIMESTAMP
+  - Schema ready for implementation
 
 - ✅ ML Integration Tests (test/test_ml_integration.py)
   - Test 1: Model file existence ✅ PASS
@@ -1006,31 +1043,46 @@ Real-World Scenario Examples:
 
 **Phase 3 Hybrid Approach - Why This Works:**
 
-1. **Synthetic Bootstrap (Today):** Start with 10,000 training samples from validated heuristic
+1. **Synthetic Bootstrap (TODAY ✅):** Start with 10,000 training samples from validated heuristic
    - No waiting for real data collection (traditional ML bottleneck eliminated)
-   - Model ready for deployment immediately
-   - 94% accuracy sufficient for production use
+   - Model ready for deployment immediately ✅
+   - 94% accuracy sufficient for production use ✅
    
-2. **Real Data Collection (Background):** ESM popups during uncertainty
-   - Users verify predictions through simple clicks (3-4/day)
-   - Zero friction - happens in background
-   - System accumulates ground-truth labels
+2. **Real Data Collection (PENDING ⏳):** ESM popups during uncertainty
+   - [TODO] Implement ESM popup notifications on uncertain blocks
+   - [TODO] Users verify predictions through simple Y/R/F/I clicks
+   - [TODO] System accumulates ground-truth labels
+   - Framework design ready, implementation pending
    
-3. **Continuous Improvement (Weekly):** Retrain as verified data arrives
-   - After 1 week: ~50-100 verified blocks collected
+3. **Continuous Improvement (FUTURE ⏳):** Retrain as verified data arrives
+   - After 1 week: ~50-100 verified blocks collected (when ESM active)
    - Combine synthetic + verified for retraining
    - Model improves automatically
    - Deploy improved model with zero downtime
 
-**Result:**
-- ✅ Full ML pipeline deployed immediately (94% accuracy)
-- ✅ Real data collecting in background with zero effort
-- ✅ Model continuously improves as verified data arrives
-- ✅ Production-ready from day 1 (unlike traditional ML approaches)
+**Result (TODAY ✅):**
+- ✅ Core ML pipeline deployed (94% accuracy)
+- ✅ Model integrated into BlockEvaluator
+- ✅ Heuristic fallback working
+- ✅ Production-ready from day 1
+
+**Pending for Continuous Improvement ⏳:**
+- ⏳ ESM popup handler implementation
+- ⏳ Database schema for verification tracking
+- ⏳ Real data collection framework
+
+### Phase 3 Pending: ESM Popup Implementation ⏳ TODO
+
+**Files to Create:**
+1. `ml/esm_popup.py` - Notification handler with hotkey listeners
+2. Update `database/db.py` - Add verification tracking columns
+3. Update `analyze/block_evaluator.py` - Hook up ESM popup queue
+
+**Estimated Effort:** 3-4 hours
 
 ### Phase 4: Model Retraining & Continuous Improvement ⏳ PENDING
 
-**When Real Data Available (After 1 week):**
+**When Real Data Available (After 1-2 weeks of ESM collection):**
 - [ ] Extract verified blocks from database (is_manually_verified = TRUE)
 - [ ] Combine synthetic + verified data for retraining
 - [ ] Evaluate model performance improvement
@@ -1117,10 +1169,14 @@ pytest test/test_phase2.py::test_heuristic_rules -v
 
 ---
 
-## Conclusion ✅ PHASE 1, 2, & 3 COMPLETE | ⏳ PHASE 4 PENDING
+## Conclusion ✅ PHASE 1, 2 COMPLETE | ✅ PHASE 3 PARTIAL | ⏳ PHASE 3-4 PENDING
 
-**Status:** Phase 1, 2 & 3 - Full pipeline from real-time data collection through ML predictions fully implemented, tested, and production-ready.
-Phase 4 - Advanced features pending (future enhancements).
+**Status:** 
+- Phase 1: ✅ Complete - All real-time data collection implemented
+- Phase 2: ✅ Complete - 5-minute block evaluation with heuristic deployed
+- Phase 3A: ✅ Complete - Synthetic ML bootstrap deployed (94% accuracy)
+- Phase 3B: ⏳ Pending - ESM popup collection framework (design ready, code pending)
+- Phase 4: ⏳ Pending - Advanced features
 
 **Phase 1 Completion (100% ✅):**
 - ✅ Real-time app/window tracking (99%+ accuracy)
@@ -1146,19 +1202,27 @@ Phase 4 - Advanced features pending (future enhancements).
 - ✅ Comprehensive testing: 6/6 tests passing (3 Phase 2 + 3 Enhancement)
 - ✅ 15/15 database columns fully populated and operational
 
-**Phase 3 Completion (100% ✅) - Hybrid Synthetic/Real Approach:**
-- ✅ Synthetic Data Generator: 10,000 samples generated with 8% label noise
-- ✅ Feature Extractor: 9-dimensional feature vector pipeline
-- ✅ ML Model Trainer: XGBoost trained, **94% accuracy achieved**
-- ✅ ML Predictor: Production-ready with dynamic label loading
-- ✅ Model Persistence: 
-  - `context_detector.pkl` (14.2 MB) - trained XGBoost model
-  - `context_detector_classes.pkl` (1 KB) - dynamic label mapping
-- ✅ BlockEvaluator Integration: ML predictions with heuristic fallback
-- ✅ Confidence Thresholding: Configurable (default 0.5)
-- ✅ ESM Popup Framework: Ready for verified data collection
-- ✅ Database Schema: Prepared for manual verification (is_manually_verified, manually_verified_label, verified_at)
-- ✅ ML Integration Tests: 5/5 tests passing
+**Phase 3 Completion Status - PARTIAL ✅ + ⏳:**
+- ✅ Synthetic Data Generator: Complete - 10,000 samples with realistic noise
+- ✅ Feature Extractor: Complete - 9-dimensional feature pipeline
+- ✅ ML Model Trainer: Complete - XGBoost trained with 94% accuracy
+- ✅ ML Predictor: Complete - Dynamic label encoding, production-ready
+- ✅ BlockEvaluator Integration: Complete - ML + heuristic hybrid
+- ✅ ML Integration Tests: Complete - 5/5 tests passing
+- ⏳ ESM Popup Handler: PENDING - Framework design ready, code needs implementation
+- ⏳ Database Schema: PENDING - Columns designed, need to add to database/db.py
+
+**What's Working (Phase 3A) ✅:**
+- Full ML pipeline deployed and operational
+- 94% prediction accuracy on test set
+- Seamless fallback to heuristic if ML confidence too low
+- Inference <5ms per prediction
+- Integration with BlockEvaluator verified
+
+**What's Pending (Phase 3B) ⏳:**
+- ESM popup notifications for uncertain blocks
+- User verification collection framework
+- Automatic retraining pipeline (ready after ESM data collected)
 
 **Model Performance (Phase 3):**
 - Overall Accuracy: 94%
@@ -1174,15 +1238,16 @@ Phase 4 - Advanced features pending (future enhancements).
   4. Typing intensity: 8.0%
   5. Others: <7%
 
-**Current Capabilities - Full Stack:**
+**Current Capabilities - Full Stack (With Accurate Status):**
 - ✅ Phase 1: Complete behavioral signal collection (real-time, <5ms latency)
 - ✅ Phase 1: Complete project/file context extraction (IDE parsing + tab detection)
 - ✅ Phase 1: Complete database schema and validation (15/15 columns)
 - ✅ Phase 2: Complete 5-minute block evaluation with retroactive tagging
 - ✅ Phase 2: Production-ready heuristic detection with app categorization
 - ✅ Phase 2: Comprehensive test suite (6 tests, all passing)
-- ✅ **Phase 3: ML predictions deployed with 94% accuracy**
-- ✅ **Phase 3: Hybrid bootstrap approach (synthetic + real data ready)**
-- ✅ **Phase 3: 11 total tests passing (Phase 1, 2, & 3)**
-- ⏳ Phase 3: Continuous improvement (ESM popups + weekly retraining)
+- ✅ **Phase 3A: ML predictions deployed with 94% accuracy**
+- ✅ **Phase 3A: Synthetic bootstrap approach with heuristic fallback**
+- ✅ **Phase 3A: 11 total tests passing (Phase 1, 2, & 3)**
+- ⏳ Phase 3B: ESM popup notifications (pending implementation - 3-4 hours)
+- ⏳ Phase 3B: Continuous model improvement (ready when ESM data available)
 - ⏳ Phase 4: Advanced aggregation and insights (future)

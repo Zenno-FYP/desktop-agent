@@ -39,6 +39,7 @@ class BlockEvaluator:
         self.use_ml = use_ml
         self.ml_available = False
         self.ml_confidence_threshold = 0.5  # Default threshold
+        self.esm_popup = None  # Phase 3B: ESM popup handler
         
         # Read ML settings from config if available
         if config:
@@ -48,6 +49,22 @@ class BlockEvaluator:
         # Try to load ML model
         if self.use_ml:
             self._init_ml()
+            # Phase 3B: Initialize ESM popup handler for verification collection
+            self._init_esm_popup()
+    
+    def _init_esm_popup(self) -> None:
+        """Initialize ESM popup handler for ground-truth collection."""
+        try:
+            from ml.esm_popup import ESMPopup
+            
+            self.esm_popup = ESMPopup(
+                db=self.db,
+                config=self.config
+            )
+            print(f"[BlockEvaluator] ESM popup handler initialized")
+        except Exception as e:
+            print(f"[BlockEvaluator] Failed to initialize ESM popup: {e}")
+            self.esm_popup = None
     
     def _init_ml(self) -> None:
         """Initialize ML model."""
@@ -85,11 +102,15 @@ class BlockEvaluator:
         print(f"[BlockEvaluator] Started background thread (5-min heartbeat)")
     
     def stop(self) -> None:
-        """Stop the background evaluator thread."""
+        """Stop the background evaluator thread and clean up resources."""
         self.running = False
         if self.thread:
             self.thread.join(timeout=2.0)
-            print(f"[BlockEvaluator] Stopped background thread")
+        # Clean up ESM popup handler
+        if self.esm_popup:
+            self.esm_popup.stop()
+            self.esm_popup = None
+        print(f"[BlockEvaluator] Stopped background thread")
     
     def _run_loop(self) -> None:
         """Main loop: wake every 5 minutes and evaluate the last block."""
@@ -139,6 +160,14 @@ class BlockEvaluator:
                 context_state=context_state,
                 confidence_score=confidence_score
             )
+            
+            # Phase 3B: Queue uncertain blocks for ESM verification (non-blocking)
+            if self.esm_popup and confidence_score < self.ml_confidence_threshold:
+                self.esm_popup.queue_for_verification(
+                    log_ids=log_ids,
+                    context_state=context_state,
+                    confidence=confidence_score
+                )
             
             # Log the evaluation
             block_start = five_mins_ago.strftime("%H:%M")

@@ -5,6 +5,9 @@
 # Sampling interval in seconds (how often to check active window)
 sample_interval_sec: 2
 
+# Flush interval in seconds (how often to flush logs to database)
+flush_interval_sec: 300  # 5 minutes
+
 # Idle threshold in seconds (inactivity before marking as idle)
 # 10 sec: Captures genuine away-from-desk, ignores brief thinking pauses
 idle_threshold_sec: 10
@@ -85,6 +88,43 @@ ml_model_path: ./data/models/context_detector.pkl
 # If ML confidence <= this threshold, fall back to heuristic rules
 # Default: 0.5 (50%) - use ML when confident enough, otherwise use rule-based detection
 ml_confidence_threshold: 0.5
+
+## PHASE 3B: Experience Sampling Method (ESM) Settings
+
+# ESM Popup configuration for ground-truth data collection
+esm_popup:
+  enabled: true              # Enable/disable ESM popup collection
+  
+  # Confidence threshold for triggering ESM popup
+  # If prediction confidence < this, show popup for user verification
+  confidence_threshold: 0.70
+  
+  # Rate limiting - prevent notification fatigue
+  rate_limiting:
+    min_interval_hours: 0.5   # Minimum 30 minutes between popups
+    max_per_day: 20           # Maximum 20 popups per day
+  
+  # UI Settings
+  ui:
+    auto_dismiss_seconds: 30   # Auto-close popup after 30 seconds
+    window_geometry: "450x180+1050+20"  # Size and position (center-right, fully visible)
+    
+    # Colors (hex format)
+    colors:
+      background: "#2b2b2b"      # Dark background
+      text: "#ffffff"            # White text
+      subtext: "#888888"         # Gray subtext
+      button_positive: "#1a7f12" # Green (Focused, Reading)
+      button_negative: "#7f1212" # Red (Distracted, Idle)
+      button_hover_pos: "#2a9f22"    # Green hover
+      button_hover_neg: "#9f2222"    # Red hover
+    
+    # Typography
+    fonts:
+      title: "Arial 11 bold"
+      message: "Arial 10"
+      subtext: "Arial 9"
+      button: "Arial 9 bold"
 
 # Database Settings
 db:
