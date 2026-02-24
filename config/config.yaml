@@ -73,9 +73,22 @@ app_categorization:
     - System
     - explorer.exe
 
-## Database Settings
+## PHASE 3: Machine Learning Settings
+
+# Enable/disable ML model-based predictions
+ml_enabled: true
+
+# Path to trained ML model (XGBoost classifier)
+ml_model_path: ./data/models/context_detector.pkl
+
+# Confidence threshold for ML predictions (0.0 - 1.0)
+# If ML confidence <= this threshold, fall back to heuristic rules
+# Default: 0.5 (50%) - use ML when confident enough, otherwise use rule-based detection
+ml_confidence_threshold: 0.5
+
+# Database Settings
 db:
-  path: ./storage/agent.db
+  path: ./data/db/zenno.db
   # Thread safety settings
   check_same_thread: false   # Allow cross-thread SQLite access
   timeout: 10.0              # Lock timeout in seconds

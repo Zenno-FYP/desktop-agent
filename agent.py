@@ -11,7 +11,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config.config import Config
-from storage.db import Database
+from database.db import Database
 from monitor.app_focus import get_active_window
 from monitor.behavioral_metrics import BehavioralMetrics
 from monitor.idle_detector import IdleDetector
@@ -156,7 +156,7 @@ class DesktopAgent:
         # Initialize Phase 2: Context detection via 5-minute block evaluator
         self.context_detector = ContextDetector(self.config)
         block_duration_sec = self.config.get("block_duration_sec", 300)
-        self.block_evaluator = BlockEvaluator(self.db, self.context_detector, block_duration_sec=block_duration_sec)
+        self.block_evaluator = BlockEvaluator(self.db, self.context_detector, config=self.config, block_duration_sec=block_duration_sec)
         self.block_evaluator.start()
         
         # Session tracking

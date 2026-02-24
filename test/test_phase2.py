@@ -14,9 +14,28 @@ import sqlite3
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from storage.db import Database
+from database.db import Database
 from analyze.context_detector import ContextDetector
 from analyze.block_evaluator import BlockEvaluator
+
+
+def get_test_db():
+    """
+    Get a clean, isolated in-memory SQLite database for testing.
+    
+    Using in-memory database (':memory:') ensures:
+    - Tests don't interfere with each other
+    - Tests don't touch production database
+    - Tests are ultra-fast
+    - Each test gets a fresh database
+    
+    Returns:
+        Database: Connected database with schema created
+    """
+    db = Database(':memory:')  # In-memory SQLite (isolated, fast)
+    db.connect()
+    db.create_tables()
+    return db
 
 
 def test_context_detector_heuristics():
@@ -109,10 +128,8 @@ def test_block_aggregation_and_tagging():
     print("\n[Test 2] Block Aggregation & Retroactive Tagging")
     print("=" * 60)
     
-    # Create database connection
-    db = Database('storage/agent.db')
-    db.connect()
-    db.create_tables()
+    # Create database connection (in-memory, isolated)
+    db = get_test_db()
     
     # Insert test logs with current timestamps
     now = datetime.utcnow()
@@ -179,8 +196,8 @@ def test_block_aggregation_and_tagging():
     evaluator.evaluate_block()
     
     # Verify retroactive tagging
-    conn = sqlite3.connect('storage/agent.db', check_same_thread=False)
-    cursor = conn.cursor()
+    # Use db.conn instead of creating new connection (works with in-memory DB)
+    cursor = db.conn.cursor()
     
     cursor.execute(
         f"SELECT context_state FROM raw_activity_logs WHERE log_id IN ({','.join('?' * len(log_ids))})",
@@ -199,7 +216,6 @@ def test_block_aggregation_and_tagging():
     assert all_same, "Logs in same block have different context states"
     print(f"  [OK] All logs in block have same context: {contexts[0]}")
     
-    conn.close()
     db.close()
     
     print("\n[Test 2] PASSED - Block aggregation and tagging works correctly")
@@ -211,9 +227,7 @@ def test_multi_project_scenario():
     print("\n[Test 3] Multi-Project Scenario")
     print("=" * 60)
     
-    db = Database('storage/agent.db')
-    db.connect()
-    db.create_tables()
+    db = get_test_db()  # Use test database (in-memory, isolated)
     
     # Insert logs from 3 different projects in same 5-minute block
     now = datetime.utcnow()
@@ -252,8 +266,8 @@ def test_multi_project_scenario():
     evaluator.evaluate_block()
     
     # Verify all get same context despite being different projects
-    conn = sqlite3.connect('storage/agent.db', check_same_thread=False)
-    cursor = conn.cursor()
+    # Use db.conn instead of creating new connection (works with in-memory DB)
+    cursor = db.conn.cursor()
     
     cursor.execute(
         f"""SELECT project_name, context_state, confidence_score 
@@ -270,7 +284,6 @@ def test_multi_project_scenario():
     for proj, _, _, ctx, conf in [(r[0], r[0], r[0], r[1], r[2]) for r in results]:
         print(f"       {proj:12} → {ctx:12} ({conf:.0%})")
     
-    conn.close()
     db.close()
     
     print("\n[Test 3] PASSED - Multi-project scenario handled correctly")

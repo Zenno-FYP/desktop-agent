@@ -26,7 +26,7 @@ python agent.py
 The agent will:
 1. Track your active window, keyboard, mouse, and idle time (Phase 1)
 2. Every 5 minutes, evaluate your mental state as: Focused, Reading, Distracted, or Idle (Phase 2)
-3. Store all data in `storage/agent.db` (SQLite)
+3. Store all data in `data/db/zenno.db` (SQLite)
 
 ### Run Tests
 ```bash
@@ -182,7 +182,7 @@ flush_interval_sec: 300             # Default 5 min (300 sec)
 
 # Database
 database:
-  path: ./storage/agent.db          # SQLite database location
+  path: ./data/db/zenno.db          # SQLite database location
 
 # Block Evaluation (Phase 2)
 block_duration_sec: 300             # 5-minute blocks
@@ -251,7 +251,7 @@ python agent.py 2>&1 | grep -E "\[BlockEvaluator\]|\[Session\]|\[DB\]"
 ### Checking Database
 ```python
 import sqlite3
-conn = sqlite3.connect('storage/agent.db')
+conn = sqlite3.connect('data/db/zenno.db')
 cursor = conn.cursor()
 cursor.execute("SELECT COUNT(*) FROM raw_activity_logs WHERE context_state IS NOT NULL")
 print(f"Evaluated logs: {cursor.fetchone()[0]}")
@@ -290,7 +290,7 @@ conn.close()
 - Fix: Restart agent fresh
 
 ### Database corrupted
-- Delete `storage/agent.db` and restart agent
+- Delete `data/db/zenno.db` and restart agent
 - New database will be created with schema
 
 ### High CPU usage

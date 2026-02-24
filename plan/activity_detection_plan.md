@@ -375,46 +375,282 @@ Scenario: User touches 3 projects in one 5-minute block while Distracted
 
 This solves the exact problem: each project gets isolated context state for the specific time window they were touched.
 
-### 3.4 Machine Learning Model (Phase 3)
+### 3.4 Machine Learning Model (Phase 3) - HYBRID APPROACH ✅ NEW
 
-**Training Data Collection:**
+**Strategy: Synthetic Bootstrap + Real Data (ESM Popup)**
 
-1. **Data Gathering (Month 1-2):**
-   - Collect 5+ days of data (288+ blocks of 5 minutes each)
-   - Manual labels: "Focused", "Reading", "Distracted", "Idle"
-   - Each block gets one label regardless of project switches
+Instead of waiting 2 weeks for real data, we use a hybrid approach:
 
-2. **Feature Engineering (from block-level metrics):**
-   ```python
-   features = [
-       typing_intensity,          # KPM during block
-       mouse_click_rate,          # CPM during block
-       mouse_scroll_events,       # Scrolls during block
-       idle_ratio,                # idle_sec / 300
-       app_switch_count,          # Distraction signal
-       project_switch_count,      # Task switching signal
-       time_of_day,               # Morning vs evening patterns
-   ]
+**Part A: Synthetic Data Generator (Today)**
+- Generate 5,000-10,000 synthetic rows directly from 10-rule heuristic rules
+- Add realistic noise to make features look like real data
+- Immediately train XGBoost model on synthetic CSV
+- Entire ML pipeline ready for deployment today
+
+**Part B: Experience Sampling Method (Background)**
+- While you work normally, system pops up notifications 3-4x/day on uncertain blocks (confidence < 0.70)
+- You click: [Yes, correct] or [No, actually it was Reading/Focused/etc]
+- System records verified labels with `is_manually_verified = TRUE` flag
+- After 1 week: Extract ~50-100 verified blocks from database
+- Retrain model with real data as it arrives (continuous improvement)
+
+#### 3.4.1 Synthetic Data Generator
+
+**File:** `ml/synthetic_data_generator.py`
+
+**How it works:**
+```python
+def generate_synthetic_data(num_rows=5000):
+    """
+    Generate realistic training data based on heuristic rules + noise
+    
+    For each synthetic block:
+    1. Randomly pick a context_state (Focused, Reading, Distracted, Idle)
+    2. Generate features that match that state
+    3. Add ~10% Gaussian noise to make it realistic
+    4. Return (features, label) pair
+    
+    Example:
+      Context: "Focused"
+      Generated: typing_intensity=45.3 (±noise), clicks=12.5 (±noise), ...
+      Label: "Focused"
+    """
+```
+
+**Output:** `training_data_synthetic.csv` with 5,000 rows
+```
+typing_intensity, click_rate, scrolls, app_switches, project_switches, idle_ratio, touched_distraction, time_of_day, day_of_week, context_state
+45.3, 12.5, 8, 2, 1, 0.15, False, 14, 2, Focused
+12.1, 5.2, 45, 6, 3, 0.2, True, 19, 5, Distracted
+8.5, 3.1, 120, 4, 2, 0.3, False, 10, 1, Reading
+0.5, 0.2, 0, 1, 1, 0.92, False, 3, 3, Idle
+...
+```
+
+#### 3.4.2 Feature Extractor
+
+**File:** `ml/feature_extractor.py`
+
+**Purpose:** Convert block_metrics dict → feature vector for ML model
+
+```python
+def extract_features(block_metrics):
+    """
+    Input: {
+        'typing_intensity': 45.3,
+        'mouse_click_rate': 12.5,
+        'mouse_scroll_events': 8,
+        'idle_duration_sec': 45,
+        'total_duration_sec': 300,
+        'app_switch_count': 2,
+        'project_switch_count': 1,
+        'touched_distraction_app': False,
+        'end_time': datetime object,
+    }
+    
+    Output: [45.3, 12.5, 8, 0.15, 2, 1, 0.85, 14, 2]
+            [kpm, cpm, scrolls, idle_ratio, app_sw, proj_sw, distraction_bool, hour, day_of_week]
+    """
+    idle_ratio = block_metrics['idle_duration_sec'] / max(block_metrics['total_duration_sec'], 1)
+    time_of_day = block_metrics['end_time'].hour
+    day_of_week = block_metrics['end_time'].weekday()
+    
+    return np.array([
+        block_metrics['typing_intensity'],
+        block_metrics['mouse_click_rate'],
+        block_metrics['mouse_scroll_events'],
+        idle_ratio,
+        block_metrics['app_switch_count'],
+        block_metrics['project_switch_count'],
+        float(block_metrics['touched_distraction_app']),  # 0.0 or 1.0
+        time_of_day,
+        day_of_week,
+    ])
+```
+
+#### 3.4.3 ML Model Training
+
+**File:** `ml/train_model.py`
+
+**Process:**
+```python
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+import joblib
+
+def train_model(csv_path='training_data.csv'):
+    # Load synthetic data
+    df = pd.read_csv(csv_path)
+    X = df[['typing_intensity', 'click_rate', 'scrolls', 'idle_ratio', 
+             'app_switches', 'project_switches', 'touched_distraction', 
+             'time_of_day', 'day_of_week']]
+    y = df['context_state']
+    
+    # Split & train
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+    model = XGBClassifier(max_depth=5, learning_rate=0.1, n_estimators=100)
+    model.fit(X_train, y_train)
+    
+    # Evaluate
+    accuracy = model.score(X_test, y_test)
+    print(f"Accuracy: {accuracy:.2%}")  # Expected: 92-95%
+    
+    # Save
+    joblib.dump(model, 'storage/models/context_model.pkl')
+    return model
+```
+
+**Training Result:** Model saved to `storage/models/context_model.pkl`
+
+#### 3.4.4 ML Predictor & Integration
+
+**File:** `ml/predictor.py`
+
+```python
+class MLPredictor:
+    def __init__(self, model_path='storage/models/context_model.pkl'):
+        self.model = joblib.load(model_path)
+        
+    def predict_with_confidence(self, block_metrics):
+        """
+        Input: block_metrics dict (from BlockEvaluator)
+        Output: (context_state, confidence_score)
+        Example: ("Focused", 0.92)
+        """
+        features = extract_features(block_metrics)
+        
+        # Predict class
+        context_state = self.model.predict([features])[0]
+        
+        # Get confidence from predict_proba
+        probabilities = self.model.predict_proba([features])[0]
+        confidence = max(probabilities)  # Highest probability = confidence
+        
+        return context_state, float(confidence)
+```
+
+**Integration in BlockEvaluator:**
+```python
+# In analyze/block_evaluator.py
+from ml.predictor import MLPredictor
+
+class BlockEvaluator:
+    def __init__(self, db, use_ml=True):
+        self.db = db
+        if use_ml:
+            self.ml_predictor = MLPredictor()  # Load trained model
+        else:
+            self.context_detector = ContextDetector()  # Fallback to heuristic
+    
+    def evaluate_block(self, block_metrics):
+        # Use ML model (or fallback to heuristic if model not found)
+        try:
+            context_state, confidence = self.ml_predictor.predict_with_confidence(block_metrics)
+        except:
+            context_state, confidence = self.context_detector.detect_context(block_metrics)
+        return context_state, confidence
+```
+
+#### 3.4.5 Experience Sampling Method (ESM) - Real Data Collection
+
+**File:** `ml/esm_popup.py`
+
+**Purpose:** Collect verified ground-truth labels passively while you work
+
+**How it works:**
+1. BlockEvaluator predicts context with confidence score
+2. If confidence < 0.70 (uncertain), queue a notification
+3. During next idle moment (user pauses), show popup:
    ```
-
-3. **Model Selection:**
-   - **Option A:** Gradient Boosting (XGBoost) - Fast inference, 92-95% accuracy
-   - **Option B:** Random Forest - Robust, 90-93% accuracy
-   - **Option C:** Neural Network (MLP) - Future scalability, 93-96% accuracy
-
-4. **Training Pipeline:**
-   ```python
-   model = XGBClassifier(max_depth=5, learning_rate=0.1)
-   X_train = extract_features_from_blocks(training_blocks)
-   y_train = [block.labeled_context for block in training_blocks]
-   model.fit(X_train, y_train)
+   ZENNO thinks you were "Distracted" for 2:00-2:05 PM. Correct?
+   [✓ Yes, correct]  [✗ No, Reading]  [✗ No, Focused]  [✗ No, Idle]
    ```
+4. You click within 1 second → system records verified label
+5. Database updated: `is_manually_verified = TRUE, manually_verified_label = "Reading"`
 
-5. **Integration (replaces heuristic):**
-   ```python
-   # In block_evaluator.py
-   context_state, confidence = model.predict_with_confidence(block_metrics)
-   ```
+**Implementation:**
+```python
+import plyer  # Cross-platform notifications
+from pynput import keyboard
+
+class ESMPopup:
+    def __init__(self, db):
+        self.db = db
+        self.pending_verifications = queue.Queue()
+    
+    def show_popup(self, block_id, predicted_state, confidence):
+        """
+        Show win10toast notification with quick-select buttons
+        """
+        options = {
+            'Yes': predicted_state,
+            'Reading': 'Reading',
+            'Focused': 'Focused',
+            'Idle': 'Idle',
+        }
+        
+        message = f"ZENNO: {predicted_state} ({confidence:.0%})? Press Y/R/F/I"
+        plyer.notification.notify(
+            title="Activity Verification",
+            message=message,
+            timeout=30,  # Auto-dismiss after 30 sec if no response
+        )
+        
+        # Set up hotkey listeners for quick response
+        self._listen_for_hotkey(block_id, options)
+    
+    def _listen_for_hotkey(self, block_id, options):
+        """
+        Listen for Y/R/F/I hotkeys and record verified label
+        """
+        def on_press(key):
+            try:
+                k = key.char.upper()
+                if k == 'Y':
+                    verified_label = options['Yes']
+                elif k == 'R':
+                    verified_label = 'Reading'
+                elif k == 'F':
+                    verified_label = 'Focused'
+                elif k == 'I':
+                    verified_label = 'Idle'
+                else:
+                    return  # Ignore other keys
+                
+                # Record in database
+                self.db.update_verification(block_id, verified_label, is_verified=True)
+                print(f"✓ Block {block_id} verified as {verified_label}")
+                
+                # Stop listening
+                listener.stop()
+            except:
+                pass
+        
+        listener = keyboard.Listener(on_press=on_press)
+        listener.start()
+```
+
+#### 3.4.6 Database Schema Updates
+
+**Add verification columns to raw_activity_logs:**
+```sql
+ALTER TABLE raw_activity_logs ADD COLUMN is_manually_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE raw_activity_logs ADD COLUMN manually_verified_label TEXT NULL;
+ALTER TABLE raw_activity_logs ADD COLUMN verified_at TIMESTAMP NULL;
+```
+
+**Context:**
+- `is_manually_verified = FALSE`: Heuristic/ML prediction (uncertain)
+- `is_manually_verified = TRUE`: You clicked to confirm (ground-truth)
+- `manually_verified_label`: Your correction if different from prediction
+
+**Query verified blocks for retraining:**
+```sql
+SELECT * FROM raw_activity_logs 
+WHERE is_manually_verified = TRUE
+ORDER BY verified_at DESC
+LIMIT 100;
+```
 
 ---
 
@@ -714,17 +950,58 @@ Real-World Scenario Examples:
 
 **Phase 2 Completion: 100% ✅** (with App Categorization Enhancement)
 
-### Phase 3: ML Enhancement (Week 5-6) ⏳ PENDING
-- [ ] Data collection (5+ days of labeled blocks)
-- [ ] Feature engineering from block-level metrics
-- [ ] Model training (XGBoost or Random Forest)
-- [ ] Replace heuristic with ML predictions
-- [ ] Confidence score output from model.predict_proba()
+### Phase 3: ML Enhancement (TODAY + Background) ✅ IN PROGRESS
 
-### Phase 4: Optimization & Hardening (Week 7-8) ⏳ PENDING
-- [ ] Performance optimization
-- [ ] Privacy filtering
-- [ ] Error handling & rollback strategies
+**Timeline: Implement by today, collect real data in background**
+
+**Today (4-6 hours):**
+- [x] Write Synthetic Data Generator (ml/synthetic_data_generator.py)
+  - Generates 5,000 rows based on 10-rule heuristic + noise
+  - Output: training_data_synthetic.csv
+  
+- [x] Write Feature Extractor (ml/feature_extractor.py)
+  - Converts block_metrics dict → feature vector
+  - Used by both trainer and predictor
+  
+- [x] Write ML Trainer (ml/train_model.py)
+  - Trains XGBoost on synthetic CSV
+  - Saves model to storage/models/context_model.pkl
+  - Expected accuracy: 92-95% on test set
+  
+- [x] Write ML Predictor (ml/predictor.py)
+  - Loads trained model
+  - predict_with_confidence(block_metrics) → (state, confidence)
+  
+- [x] Update BlockEvaluator (analyze/block_evaluator.py)
+  - Switch from heuristic to ML predictions
+  - Keep heuristic as fallback if model unavailable
+  
+- [x] Write ESM Popup Handler (ml/esm_popup.py)
+  - Show notification on uncertain blocks (confidence < 0.70)
+  - Listen for Y/R/F/I hotkeys for quick verification
+  - Record verified labels in database
+  
+- [x] Database Schema Updates (storage/db.py)
+  - Add is_manually_verified BOOLEAN
+  - Add manually_verified_label TEXT
+  - Add verified_at TIMESTAMP
+
+**Background (Next 1-2 weeks):**
+- Real data collection via ESM popups (3-4/day)
+- You click Y/R/F/I to verify uncertain blocks
+- System accumulates ground-truth labels (is_manually_verified = TRUE)
+- After 1 week: Extract verified blocks and retrain model
+
+**Result:**
+- ✅ Full ML pipeline deployed immediately
+- ✅ Real data collecting in background with zero effort
+- ✅ Model improves continuously as verified data arrives
+
+### Phase 4: Model Retraining & Continuous Improvement ⏳ PENDING
+- [ ] After 1 week: Extract verified blocks from database
+- [ ] Combine synthetic + verified data for retraining
+- [ ] Evaluate model performance improvement
+- [ ] Retrain monthly as more data arrives
 
 ---
 
@@ -822,12 +1099,13 @@ Phase 3 - ML model training ready after data collection.
 - ✅ Comprehensive testing: 6/6 tests passing (3 Phase 2 + 3 Enhancement)
 - ✅ 13/15 database columns now populated (context_state + confidence_score filled by Phase 2)
 
-**Phase 3 Ready (pending 5+ days of data collection):**
-- Industry-standard block evaluation approach finalized
-- Heuristic rules proven accurate in testing with real-world scenarios
-- App categorization system ready for ML integration
-- Data pipeline ready for ML model integration
-- Feature engineering plan documented
+**Phase 3 Status (NEW HYBRID APPROACH):**
+- ✅ Synthetic Data Generator ready (generates 5,000 rows instantly)
+- ✅ Feature Extractor pipeline ready (block_metrics → features)
+- ✅ ML Trainer ready (XGBoost on synthetic data)
+- ✅ ML Predictor ready (deployment-ready)
+- ✅ ESM Popup handler ready (background verification collection)
+- ✅ Database schema ready (tracks verified labels)
 
 **Current Capabilities:**
 - ✅ Phase 1: Complete behavioral signal collection
@@ -837,4 +1115,6 @@ Phase 3 - ML model training ready after data collection.
 - ✅ Phase 2: Complete heuristic-based context detection with app categorization
 - ✅ Phase 2: Comprehensive test suite in test/ folder (6 tests, all passing)
 - ✅ Phase 2: Production-ready heuristics for real developer workflows
-- ⏳ Phase 3: ML model training (ready on signal after data collection)
+- ✅ **Phase 3: ML pipeline deployed TODAY (synthetic model)**
+- ⏳ Phase 3: Continuous retraining (as verified data arrives from ESM popups)
+- ⏳ Phase 4: Advanced aggregation and insights

@@ -44,6 +44,9 @@ env/
 
 # Project specific
 logs/
+# Data artifacts - DO NOT COMMIT (runtime generated)
+# This includes database files, training datasets, and ML models
+data/
 storage/*.db
 storage/*.db-wal
 storage/*.db-shm

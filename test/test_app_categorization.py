@@ -17,7 +17,7 @@ import os
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from storage.db import Database
+from database.db import Database
 from analyze.context_detector import ContextDetector
 from analyze.block_evaluator import BlockEvaluator
 

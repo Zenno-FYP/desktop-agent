@@ -20,9 +20,28 @@ from datetime import datetime
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from storage.db import Database
+from database.db import Database
 from analyze.context_detector import ContextDetector
 from analyze.block_evaluator import BlockEvaluator
+
+
+def get_test_db():
+    """
+    Get a clean, isolated in-memory SQLite database for testing.
+    
+    Using in-memory database (':memory:') ensures:
+    - Tests don't interfere with each other
+    - Tests don't touch production database  
+    - Tests are ultra-fast
+    - Each test gets a fresh database
+    
+    Returns:
+        Database: Connected database with schema created
+    """
+    db = Database(':memory:')  # In-memory SQLite (isolated, fast)
+    db.connect()
+    db.create_tables()
+    return db
 
 
 def test_agent_startup_and_shutdown():
@@ -60,9 +79,7 @@ def test_blockevaluator_short_cycle():
     print("\n[Integration Test 2] BlockEvaluator Short Cycle")
     print("=" * 60)
     
-    db = Database('storage/agent.db')
-    db.connect()
-    db.create_tables()
+    db = get_test_db()  # Use test database (in-memory, isolated)
     
     # Create evaluator with 10-second block (instead of 300 sec)
     detector = ContextDetector()
@@ -71,11 +88,9 @@ def test_blockevaluator_short_cycle():
     # Manually evaluate - should find recent logs
     initial_count = 0
     try:
-        conn = sqlite3.connect('storage/agent.db', check_same_thread=False)
-        cursor = conn.cursor()
+        cursor = db.conn.cursor()  # Use db connection (works with in-memory DB)
         cursor.execute("SELECT COUNT(*) FROM raw_activity_logs WHERE context_state IS NOT NULL")
         initial_count = cursor.fetchone()[0]
-        conn.close()
     except:
         pass
     
@@ -85,11 +100,9 @@ def test_blockevaluator_short_cycle():
     evaluator.evaluate_block()
     
     # Check results
-    conn = sqlite3.connect('storage/agent.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = db.conn.cursor()  # Use db connection (works with in-memory DB)
     cursor.execute("SELECT COUNT(*) FROM raw_activity_logs WHERE context_state IS NOT NULL")
     final_count = cursor.fetchone()[0]
-    conn.close()
     
     print(f"  [OK] Final evaluated logs: {final_count}")
     assert final_count >= initial_count, "No logs were evaluated"
@@ -107,13 +120,53 @@ def test_database_persistence():
     print("\n[Integration Test 3] Database Persistence")
     print("=" * 60)
     
-    db = Database('storage/agent.db')
-    db.connect()
-    db.create_tables()
+    db = get_test_db()  # Use test database (in-memory, isolated)
+    
+    # Insert test logs
+    from datetime import timedelta
+    now = datetime.utcnow()
+    
+    test_logs = [
+        {
+            'start_time': (now - timedelta(seconds=30)).isoformat(),
+            'end_time': (now - timedelta(seconds=25)).isoformat(),
+            'app_name': 'TestApp',
+            'window_title': 'Test Window',
+            'duration_sec': 5,
+            'project_name': 'test_project',
+            'project_path': '/test/path',
+            'active_file': 'test.py',
+            'detected_language': 'python',
+            'typing_intensity': 50.0,
+            'mouse_click_rate': 20.0,
+            'mouse_scroll_events': 2,
+            'idle_duration_sec': 0,
+        },
+        {
+            'start_time': (now - timedelta(seconds=20)).isoformat(),
+            'end_time': (now - timedelta(seconds=15)).isoformat(),
+            'app_name': 'TestApp2',
+            'window_title': 'Test Window 2',
+            'duration_sec': 5,
+            'project_name': 'test_project',
+            'project_path': '/test/path',
+            'active_file': 'test2.py',
+            'detected_language': 'python',
+            'typing_intensity': 60.0,
+            'mouse_click_rate': 15.0,
+            'mouse_scroll_events': 3,
+            'idle_duration_sec': 0,
+        }
+    ]
+    
+    # Insert logs
+    for data in test_logs:
+        db.insert_activity_log(data)
+    
+    print(f"  [OK] Inserted {len(test_logs)} test logs")
     
     # Count total logs
-    conn = sqlite3.connect('storage/agent.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = db.conn.cursor()  # Use db connection (works with in-memory DB)
     
     cursor.execute("SELECT COUNT(*) FROM raw_activity_logs")
     total = cursor.fetchone()[0]
@@ -129,7 +182,8 @@ def test_database_persistence():
     print(f"       Without context_state: {null_count}")
     
     assert total > 0, "No logs in database"
-    conn.close()
+    assert total == len(test_logs), "Not all logs were inserted"
+    
     db.close()
     print("[Integration Test 3] PASSED")
     return True
