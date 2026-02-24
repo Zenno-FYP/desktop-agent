@@ -7,14 +7,14 @@ def get_active_window():
     """Get the currently active window on Windows.
     
     Returns:
-        tuple: (app_name, window_title) or (None, None) if error
+        tuple: (app_name, window_title, pid) or (None, None, None) if error
     """
     try:
         # Get foreground window handle
         hwnd = ctypes.windll.user32.GetForegroundWindow()
         
         if not hwnd:
-            return None, None
+            return None, None, None
 
         # Get window title length
         length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
@@ -29,6 +29,7 @@ def get_active_window():
         # Get process name from window handle
         pid = wintypes.DWORD()
         ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        pid_value = pid.value
         
         # Get process name
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -51,8 +52,8 @@ def get_active_window():
         else:
             app_name = "Unknown"
 
-        return app_name, window_title
+        return app_name, window_title, pid_value
 
     except Exception as e:
         print(f"Error getting active window: {e}")
-        return None, None
+        return None, None, None
