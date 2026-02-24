@@ -1,6 +1,5 @@
 """Detect idle time based on user activity."""
 import time
-from typing import Tuple
 
 
 class IdleDetector:

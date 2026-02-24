@@ -19,7 +19,11 @@ class Database:
 
     def connect(self):
         """Open connection and enable WAL mode."""
-        self.conn = sqlite3.connect(str(self.db_path))
+        self.conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,  # Allow use in different threads (safe with WAL mode)
+            timeout=10.0  # Wait up to 10 seconds for locks
+        )
         # Enable WAL mode for better concurrency
         self.conn.execute("PRAGMA journal_mode=WAL")
         # Enable foreign keys

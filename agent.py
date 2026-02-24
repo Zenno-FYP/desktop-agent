@@ -186,7 +186,7 @@ class DesktopAgent:
                         # Start new file session (same app, different file)
                         self.current_session = ActivitySession(app_name, window_title, pid)
                         new_file = self.current_session.current_file
-                        print(f"[Tab Switch] {old_file} → {new_file}")
+                        print(f"[Tab Switch] {old_file} -> {new_file}")
                     else:
                         # Same file, just update window title
                         self.current_session.update_file_context(window_title)

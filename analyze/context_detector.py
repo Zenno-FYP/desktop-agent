@@ -1,5 +1,5 @@
 """Detect context state (Focused, Reading, Distracted, Idle) from behavioral metrics."""
-from typing import Tuple, Optional
+from typing import Tuple
 
 
 class ContextDetector:

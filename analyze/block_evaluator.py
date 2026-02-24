@@ -2,7 +2,6 @@
 import threading
 import time
 from datetime import datetime, timedelta
-from typing import Optional
 
 
 class BlockEvaluator:
@@ -58,6 +57,8 @@ class BlockEvaluator:
                 self.evaluate_block()
             except Exception as e:
                 print(f"[BlockEvaluator] Error in evaluation loop: {e}")
+                import traceback
+                traceback.print_exc()
     
     def evaluate_block(self) -> None:
         """Evaluate the most recent block of unevaluated logs.
@@ -66,7 +67,7 @@ class BlockEvaluator:
         aggregates their metrics, determines context state,
         and retroactively tags them all.
         """
-        now = datetime.now()
+        now = datetime.utcnow()  # Use UTC to match agent's logging
         five_mins_ago = now - timedelta(seconds=self.block_duration_sec)
         
         try:
