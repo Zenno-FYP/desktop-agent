@@ -39,12 +39,16 @@ class BlockEvaluator:
         self.use_ml = use_ml
         self.ml_available = False
         self.ml_confidence_threshold = 0.5  # Default threshold
+        self.esm_confidence_threshold = None  # Will be read from config
         self.esm_popup = None  # Phase 3B: ESM popup handler
         
         # Read ML settings from config if available
         if config:
             self.use_ml = config.get('ml_enabled', use_ml)
             self.ml_confidence_threshold = config.get('ml_confidence_threshold', 0.5)
+            # Read ESM popup threshold from config
+            esm_config = config.get('esm_popup', {})
+            self.esm_confidence_threshold = esm_config.get('confidence_threshold')
         
         # Try to load ML model
         if self.use_ml:
@@ -171,7 +175,7 @@ class BlockEvaluator:
             )
             
             # Phase 3B: Prompt immediate verification for low-confidence blocks (non-blocking)
-            if self.esm_popup and confidence_score < self.ml_confidence_threshold:
+            if self.esm_popup and confidence_score < self.esm_confidence_threshold:
                 self.esm_popup.queue_for_verification(
                     log_ids=log_ids,
                     context_state=context_state,
