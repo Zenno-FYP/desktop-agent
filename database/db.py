@@ -64,10 +64,51 @@ class Database:
                 
                 -- ML Output (Current Model's Guess)
                 context_state TEXT,       -- "Focused", "Distracted", "Idle", "Reading"
-                confidence_score REAL     -- e.g., 0.92
+                confidence_score REAL,    -- e.g., 0.92
+                
+                -- Phase 3B: ESM Verification (Ground-Truth User Feedback)
+                manually_verified_label TEXT NULL,    -- User's corrected answer (NULL = unverified)
+                verified_at TIMESTAMP NULL            -- When user verified this entry
             )
         """)
         self.conn.commit()
+        
+        # Phase 3B Migration: Add verification columns if they don't exist
+        self._migrate_add_verification_columns()
+
+    def _migrate_add_verification_columns(self):
+        """Add verification columns for ESM popup if they don't exist (idempotent).
+        
+        Phase 3B uses manually_verified_label (user's correction) and verified_at (when)
+        to track ground-truth feedback from ESM popups.
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected. Call connect() first.")
+        
+        try:
+            # Check if manually_verified_label column exists
+            cursor = self.conn.execute(
+                "PRAGMA table_info(raw_activity_logs)"
+            )
+            columns = {row[1] for row in cursor.fetchall()}
+            
+            # Add verification columns if they don't exist
+            if 'manually_verified_label' not in columns:
+                self.conn.execute(
+                    "ALTER TABLE raw_activity_logs ADD COLUMN manually_verified_label TEXT NULL"
+                )
+            
+            if 'verified_at' not in columns:
+                self.conn.execute(
+                    "ALTER TABLE raw_activity_logs ADD COLUMN verified_at TIMESTAMP NULL"
+                )
+            
+            self.conn.commit()
+            
+        except sqlite3.OperationalError as e:
+            # Columns already exist or other schema issue
+            print(f"[DB Migration] {e} (columns may already exist)")
+            pass
 
     def start_session(self, app_name: str, window_title: str = "") -> int:
         """DEPRECATED: Use insert_activity_log instead."""
@@ -248,3 +289,83 @@ class Database:
         self.conn.commit()
         
         return cursor.rowcount
+
+    def update_log_verification(self, log_id: int, verified_label: str) -> bool:
+        """Record user's manual verification for a log entry (ESM popup response).
+        
+        Args:
+            log_id: ID of the log to update
+            verified_label: The verified context state ("Focused", "Reading", "Distracted", "Idle")
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected. Call connect() first.")
+        
+        try:
+            cursor = self.conn.execute(
+                """
+                UPDATE raw_activity_logs
+                SET manually_verified_label = ?, verified_at = ?
+                WHERE log_id = ?
+                """,
+                (verified_label, datetime.now().isoformat(), log_id)
+            )
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            print(f"[ESM] Database error updating verification: {e}")
+            return False
+
+    def query_verified_logs(self, limit: int = 100) -> list:
+        """Query verified logs for model retraining (manually verified entries).
+        
+        Returns only logs where manually_verified_label IS NOT NULL,
+        ordered by most recent first.
+        
+        Args:
+            limit: Maximum number of logs to return
+        
+        Returns:
+            List of verified log dictionaries
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected. Call connect() first.")
+        
+        cursor = self.conn.execute(
+            """
+            SELECT * FROM raw_activity_logs
+            WHERE manually_verified_label IS NOT NULL
+            ORDER BY verified_at DESC
+            LIMIT ?
+            """,
+            (limit,)
+        )
+        rows = cursor.fetchall()
+        
+        # Convert to dict (matching all columns including verification fields)
+        result = []
+        for row in rows:
+            result.append({
+                'log_id': row[0],
+                'start_time': row[1],
+                'end_time': row[2],
+                'app_name': row[3],
+                'window_title': row[4],
+                'duration_sec': row[5],
+                'project_name': row[6],
+                'project_path': row[7],
+                'active_file': row[8],
+                'detected_language': row[9],
+                'typing_intensity': row[10],
+                'mouse_click_rate': row[11],
+                'mouse_scroll_events': row[12],
+                'idle_duration_sec': row[13],
+                'context_state': row[14],
+                'confidence_score': row[15],
+                'manually_verified_label': row[16],
+                'verified_at': row[17],
+            })
+        
+        return result
