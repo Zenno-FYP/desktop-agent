@@ -50,6 +50,16 @@ class SyntheticDataGenerator:
             print(f"Generating {count} {context_state} blocks...")
             for _ in range(count):
                 row = self._generate_row_for_context(context_state)
+                
+                # --- NEW: Introduce 8% Label Noise ---
+                # Simulates the fuzziness of real human behavior where metrics 
+                # don't perfectly align with their actual mental state.
+                # This prevents the model from memorizing exact threshold boundaries
+                # and forces it to generalize better to real-world data.
+                if random.random() < 0.08:  # 8% of data gets mislabeled
+                    context_state_noisy = random.choice(['Focused', 'Reading', 'Distracted', 'Idle'])
+                    row[-1] = context_state_noisy  # Override the label with noise
+                    
                 rows.append(row)
         
         # Shuffle rows to mix contexts
@@ -138,6 +148,9 @@ class SyntheticDataGenerator:
         """
         READING rule: kpm < 20 and cpm < 10 and scrolls > 5
         Typical: Looking at documentation, tutorials, articles
+        
+        NOTE: Idle ratio overlaps with Idle state (0.20-0.45) to force the model
+        to use other signals (high scrolling) rather than memorizing idle_ratio thresholds.
         """
         # Low typing (5-15 KPM)
         typing_intensity = self._add_noise(random.uniform(5, 15))
@@ -148,8 +161,9 @@ class SyntheticDataGenerator:
         # High scrolling (10-50 scrolls) - main signal
         scrolls = random.randint(10, 50)
         
-        # Low-moderate idle (10-30%)
-        idle_ratio = self._add_noise(random.uniform(0.10, 0.30))
+        # Overlapping idle ratio with Idle state (20-45% instead of 10-30%)
+        # This forces the model to rely on other features like high scrolling
+        idle_ratio = self._add_noise(random.uniform(0.20, 0.45))
         
         # Few app switches (1-2)
         app_switches = random.randint(1, 2)
@@ -218,9 +232,14 @@ class SyntheticDataGenerator:
         """
         IDLE rule: High idle ratio (>0.5) OR very low signals across board
         Typical: Away from desk, thinking, coffee break
+        
+        NOTE: Intentionally allows some "Idle" blocks to have typing (e.g., chatting with 
+        coworker at desk, quick message). Overlapping idle_ratio with Reading (0.40-0.95 
+        instead of 0.60-0.95) forces model to use full feature set, not just idle_ratio.
         """
-        # Very low typing (0-10 KPM)
-        typing_intensity = self._add_noise(random.uniform(0, 10))
+        # Very low typing (0-25 KPM) - can have some typing when idle at desk
+        # This realistic overlap forces the model to not memorize idle_ratio threshold
+        typing_intensity = self._add_noise(random.uniform(0, 25))
         
         # Very low clicking (0-5 CPM)
         click_rate = self._add_noise(random.uniform(0, 5))
@@ -228,8 +247,9 @@ class SyntheticDataGenerator:
         # Minimal scrolling (0-3 scrolls)
         scrolls = random.randint(0, 3)
         
-        # High idle ratio (60-95%) - main signal
-        idle_ratio = self._add_noise(random.uniform(0.60, 0.95))
+        # High idle ratio with lower threshold (40-95% instead of 60-95%)
+        # Overlaps with Reading range to force feature combination learning
+        idle_ratio = self._add_noise(random.uniform(0.40, 0.95))
         
         # Few app switches (0-2)
         app_switches = random.randint(0, 2)

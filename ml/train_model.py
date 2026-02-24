@@ -192,10 +192,14 @@ class MLModelTrainer:
     
     def save_model(self, output_path='data/models/context_detector.pkl'):
         """
-        Save trained model to disk.
+        Save trained model and label mapping to disk.
         
         Args:
-            output_path (str): Path to save model
+            output_path (str): Path to save model (.pkl file)
+            
+        Note:
+            Also saves label_decoder to {output_path.replace('.pkl', '_classes.pkl')}
+            This ensures the label mapping is always in sync with the model.
         """
         if self.model is None:
             raise ValueError("Model must be trained first")
@@ -205,7 +209,15 @@ class MLModelTrainer:
         
         # Save model
         joblib.dump(self.model, output_path)
-        print(f"\n✅ Model saved to {output_path}")
+        print(f"\n[ML] Model saved to {output_path}")
+        
+        # NEW: Save label mapping alongside the model
+        # This ensures the predictor can always load the correct label mapping
+        # even if new context states are added in the future
+        encoder_path = output_path.replace('.pkl', '_classes.pkl')
+        joblib.dump(self.label_decoder, encoder_path)
+        print(f"[ML] Label mapping saved to {encoder_path}")
+        print(f"     Label decoder: {self.label_decoder}")
     
     def load_model(self, model_path='data/models/context_detector.pkl'):
         """

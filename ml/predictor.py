@@ -38,21 +38,34 @@ class MLPredictor:
         """
         self.model_path = model_path
         self.model = None
-        self.label_decoder = {
-            0: 'Focused',
-            1: 'Distracted',
-            2: 'Reading',
-            3: 'Idle',
-        }
+        self.label_decoder = None  # Will be loaded dynamically from file
         
         self.load_model()
     
     def load_model(self):
-        """Load trained model from disk."""
+        """Load trained model and class labels from disk."""
         if not Path(self.model_path).exists():
             raise FileNotFoundError(f"Model not found at {self.model_path}")
         
         self.model = joblib.load(self.model_path)
+        
+        # NEW: Load the dynamic label mapping instead of hardcoding
+        # This ensures compatibility if new context states are added in the future
+        encoder_path = self.model_path.replace('.pkl', '_classes.pkl')
+        if Path(encoder_path).exists():
+            self.label_decoder = joblib.load(encoder_path)
+            print(f"[ML] Loaded dynamic label mapping: {self.label_decoder}")
+        else:
+            # Safe fallback if label mapping file doesn't exist
+            # (e.g., for old models trained without this feature)
+            self.label_decoder = {
+                0: 'Focused',
+                1: 'Distracted',
+                2: 'Reading',
+                3: 'Idle'
+            }
+            print(f"[ML] Using fallback label mapping: {self.label_decoder}")
+            
         print(f"[ML] Model loaded from {self.model_path}")
     
     def predict_with_confidence(self, block_metrics):
