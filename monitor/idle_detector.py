@@ -5,11 +5,12 @@ import time
 class IdleDetector:
     """Detect idle periods by monitoring user activity."""
 
-    def __init__(self, idle_threshold_sec: int = 5):
+    def __init__(self, idle_threshold_sec: int):
         """Initialize idle detector.
         
         Args:
-            idle_threshold_sec: seconds of inactivity to consider idle (default 5)
+            idle_threshold_sec: Seconds of inactivity to consider idle.
+                               Must be provided (no default - use config).
         """
         self.idle_threshold_sec = idle_threshold_sec
         self.last_activity_time = time.time()

@@ -8,8 +8,12 @@ from threading import Lock
 class BehavioralMetrics:
     """Collect real-time behavioral signals from keyboard and mouse."""
 
-    def __init__(self):
-        """Initialize metrics trackers."""
+    def __init__(self, click_debounce_ms: int = 50):
+        """Initialize metrics trackers.
+        
+        Args:
+            click_debounce_ms: Ignore clicks closer than this (ms) - prevents auto-clicks
+        """
         self.lock = Lock()
         
         # Keyboard metrics
@@ -19,7 +23,7 @@ class BehavioralMetrics:
         # Mouse metrics
         self.click_count = 0
         self.last_click_time = 0
-        self.click_debounce_ms = 50  # Ignore clicks < 50ms apart (auto-clicks)
+        self.click_debounce_ms = click_debounce_ms  # From config
         
         # Scroll metrics
         self.scroll_count = 0

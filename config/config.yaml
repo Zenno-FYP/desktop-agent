@@ -6,7 +6,12 @@
 sample_interval_sec: 2
 
 # Idle threshold in seconds (inactivity before marking as idle)
-idle_threshold_sec: 5
+# 10 sec: Captures genuine away-from-desk, ignores brief thinking pauses
+idle_threshold_sec: 10
+
+# Behavioral metrics settings
+behavioral_metrics:
+  click_debounce_ms: 50  # Ignore clicks < 50ms apart (auto-clicks)
 
 # Privacy mode: strict (no titles) or relaxed (hashed titles)
 privacy_mode: strict
