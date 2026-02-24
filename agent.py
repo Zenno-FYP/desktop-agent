@@ -12,10 +12,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config.config import Config
 from storage.db import Database
-from observer.app_focus import get_active_window
-from observer.behavioral_metrics import BehavioralMetrics
-from observer.idle_detector import IdleDetector
-from observer.project_detector import ProjectDetector
+from monitor.app_focus import get_active_window
+from monitor.behavioral_metrics import BehavioralMetrics
+from monitor.idle_detector import IdleDetector
+from monitor.project_detector import ProjectDetector
+from analyze.context_detector import ContextDetector
+from analyze.block_evaluator import BlockEvaluator
 
 
 class ActivitySession:
@@ -146,6 +148,11 @@ class DesktopAgent:
         self.db.create_tables()
         print(f"[Agent] Database initialized: {self.db_path}")
         
+        # Initialize Phase 2: Context detection via 5-minute block evaluator
+        self.context_detector = ContextDetector()
+        self.block_evaluator = BlockEvaluator(self.db, self.context_detector, block_duration_sec=300)
+        self.block_evaluator.start()
+        
         # Session tracking
         self.current_session = None
         self.current_app = None
@@ -236,6 +243,9 @@ class DesktopAgent:
     def _shutdown(self):
         """Graceful shutdown."""
         print("[Agent] Shutting down...")
+        
+        # Stop background block evaluator
+        self.block_evaluator.stop()
         
         # Flush final session
         if self.current_session:
