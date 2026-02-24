@@ -68,19 +68,37 @@ def test_context_detector_heuristics():
     assert ctx == "Focused", f"Expected Focused, got {ctx}"
     print(f"  [OK] Scenario 3 (Focused): {ctx} ({conf:.0%})")
     
-    # Scenario 4: Distracted (multiple app switches)
+    # Scenario 4: Focused (Research) - Multiple app switches but NO distraction apps
+    # (e.g., VS Code -> Browser -> Terminal -> Stack Overflow)
+    research_metrics = {
+        'typing_intensity': 30.0,
+        'mouse_click_rate': 15.0,
+        'mouse_scroll_events': 8,  # Reading across productivity apps
+        'idle_duration_sec': 15,
+        'total_duration_sec': 300,
+        'app_switch_count': 5,  # 5 apps but all productivity
+        'project_switch_count': 2,
+        'touched_distraction_app': False,  # No Discord, Twitter, etc.
+    }
+    ctx, conf = detector.detect_context(research_metrics)
+    assert ctx == "Focused (Research)", f"Expected Focused (Research), got {ctx}"
+    print(f"  [OK] Scenario 4 (Research/Debugging): {ctx} ({conf:.0%})")
+    
+    # Scenario 5: Distracted - Multiple app switches WITH distraction apps
+    # (e.g., VS Code -> Discord -> Twitter -> Chrome)
     distracted_metrics = {
         'typing_intensity': 30.0,
         'mouse_click_rate': 15.0,
         'mouse_scroll_events': 2,
         'idle_duration_sec': 15,
         'total_duration_sec': 300,
-        'app_switch_count': 5,  # 5 apps = distracted
+        'app_switch_count': 5,  # 5 apps including distraction apps
         'project_switch_count': 2,
+        'touched_distraction_app': True,  # Touched Discord, Twitter, etc.
     }
     ctx, conf = detector.detect_context(distracted_metrics)
     assert ctx == "Distracted", f"Expected Distracted, got {ctx}"
-    print(f"  [OK] Scenario 4 (Distracted): {ctx} ({conf:.0%})")
+    print(f"  [OK] Scenario 5 (True Distraction): {ctx} ({conf:.0%})")
     
     print("\n[Test 1] PASSED - All heuristic rules work correctly")
     return True

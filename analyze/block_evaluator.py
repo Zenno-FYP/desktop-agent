@@ -127,6 +127,7 @@ class BlockEvaluator:
                 - total_duration_sec: Total block time (typically 300 sec)
                 - app_switch_count: Number of unique apps touched
                 - project_switch_count: Number of unique projects touched
+                - touched_distraction_app: True if any distraction app was used during block
         """
         if not logs:
             return {
@@ -137,6 +138,7 @@ class BlockEvaluator:
                 'total_duration_sec': self.block_duration_sec,
                 'app_switch_count': 0,
                 'project_switch_count': 0,
+                'touched_distraction_app': False,
             }
         
         # Sum up raw quantities
@@ -147,6 +149,7 @@ class BlockEvaluator:
         total_session_duration = 0
         unique_apps = set()
         unique_projects = set()
+        touched_distraction = False
         
         for log in logs:
             # Calculate events from rates and durations
@@ -167,6 +170,10 @@ class BlockEvaluator:
             # Track unique apps and projects
             if log.get('app_name'):
                 unique_apps.add(log['app_name'].lower())
+                # Check if this app is a distraction app
+                if self.context_detector.is_distraction_app(log['app_name']):
+                    touched_distraction = True
+            
             if log.get('project_name'):
                 unique_projects.add(log['project_name'].lower())
         
@@ -183,4 +190,5 @@ class BlockEvaluator:
             'total_duration_sec': total_duration,
             'app_switch_count': len(unique_apps),
             'project_switch_count': len(unique_projects),
+            'touched_distraction_app': touched_distraction,
         }

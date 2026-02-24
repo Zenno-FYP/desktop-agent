@@ -1,14 +1,84 @@
 # Zenno Desktop Agent Configuration
 
+## PHASE 1: Real-time Monitoring Settings
+
 # Sampling interval in seconds (how often to check active window)
 sample_interval_sec: 2
 
 # Idle threshold in seconds (inactivity before marking as idle)
-idle_threshold_sec: 60
+idle_threshold_sec: 5
 
 # Privacy mode: strict (no titles) or relaxed (hashed titles)
 privacy_mode: strict
 
-# Database path
+## PHASE 2: Block Evaluation Settings
+
+# Block duration in seconds for context state evaluation
+block_duration_sec: 300  # 5 minutes
+
+# Heuristic rule thresholds
+heuristics:
+  # FOCUSED: High typing + moderate clicks + few app switches
+  focused_kpm_min: 40         # Minimum KPM for focused work
+  focused_cpm_min: 15         # Minimum CPM for focused work
+  focused_app_switches_max: 2 # Max app switches to still be "focused"
+  focused_confidence: 0.92    # Confidence score for focused state
+  
+  # READING: Low typing + low clicks + active scrolling
+  reading_kpm_max: 20         # Max KPM for reading
+  reading_cpm_max: 10         # Max CPM for reading
+  reading_scrolls_min: 5      # Min scrolls to count as reading
+  reading_confidence: 0.80
+  
+  # RESEARCH/DEBUGGING: Multiple app switches but all productive apps
+  research_app_switches_min: 3 # Min app switches for research/debugging
+  research_scrolls_min: 5      # Min scrolls to count as research
+  research_cpm_min: 5          # Min CPM for research activity
+  research_confidence: 0.85    # Confidence score for research state
+  
+  # IDLE: High idle ratio (away from keyboard)
+  idle_ratio_threshold: 0.5   # >50% idle = idle state
+  idle_confidence: 0.85
+  
+  # DISTRACTED: Multiple app switches with distraction apps
+  distracted_app_switches_min: 3 # Min app switches to be distracted
+  distracted_confidence: 0.75
+  distracted_immediate_confidence: 0.85  # With distraction app + low kpm
+  distracted_immediate_kpm_max: 30
+
+# App Categorization Settings
+app_categorization:
+  enabled: true              # Enable/disable app categorization
+  
+  # Custom distraction apps (add to default list)
+  # Format: app names to monitor as distractions
+  custom_distraction_apps:
+    - gaming_app
+    - streaming_service
+    # Users can add their own apps here
+  
+  # Custom productivity apps (add to default list)
+  custom_productivity_apps:
+    - custom_ide
+    - internal_tool
+    # Users can add their own apps here
+  
+  # Apps to exclude from monitoring
+  exclude_apps:
+    - System
+    - explorer.exe
+
+## Database Settings
 db:
   path: ./storage/agent.db
+  # Thread safety settings
+  check_same_thread: false   # Allow cross-thread SQLite access
+  timeout: 10.0              # Lock timeout in seconds
+  # Connection pool
+  journal_mode: WAL          # Write-Ahead Logging for concurrent access
+
+## Logging Settings
+logging:
+  level: INFO                # DEBUG, INFO, WARNING, ERROR
+  file: ./logs/agent.log
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

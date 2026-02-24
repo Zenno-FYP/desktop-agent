@@ -6,10 +6,11 @@ All tests are organized by implementation phase and located in this folder.
 
 ```
 test/
-├── test_phase1.py         # Phase 1: Real-time data collection (monitor/)
-├── test_phase2.py         # Phase 2: 5-minute block evaluation (analyze/)
-├── test_integration.py    # End-to-end agent lifecycle tests
-└── fixtures/              # Test data, mocks, and utilities
+├── test_phase1.py              # Phase 1: Real-time data collection (monitor/)
+├── test_phase2.py              # Phase 2: 5-minute block evaluation (analyze/)
+├── test_app_categorization.py  # App categorization integration tests
+├── test_integration.py         # End-to-end agent lifecycle tests
+└── fixtures/                   # Test data, mocks, and utilities
 ```
 
 ## Test Status
@@ -18,6 +19,7 @@ test/
 |-------|-----------|--------|----------|
 | **Phase 1** | Data Collection | ✅ COMPLETE | 100% |
 | **Phase 2** | Block Evaluation | ✅ COMPLETE | 100% |
+| **Phase 2 Enhanced** | App Categorization | ✅ COMPLETE | 100% |
 | **Integration** | End-to-End | ✅ COMPLETE | Full lifecycle |
 
 ## Running Tests
@@ -39,8 +41,14 @@ pytest test/test_phase1.py -v
 # Phase 2 - Block evaluation
 pytest test/test_phase2.py -v
 
+# App categorization integration
+pytest test/test_app_categorization.py -v
+
 # Integration tests
 pytest test/test_integration.py -v
+
+# Phase 2 + App Categorization (6 tests total)
+pytest test/test_phase2.py test/test_app_categorization.py -v
 ```
 
 ### Individual Test
@@ -81,16 +89,50 @@ Tests the real-time monitoring components in `monitor/`:
 
 Tests the 5-minute block evaluation in `analyze/`:
 
-- **test_context_detector_heuristics()**: Verifies all 8 heuristic rules (Idle, Reading, Focused, Distracted)
+- **test_context_detector_heuristics()**: Verifies all 10 heuristic rules
+  - Idle, Reading, Focused (deep work)
+  - Focused (Research) - productive app switching
+  - Distracted - app switching with distraction apps
+  - And 5 other scenarios
 - **test_block_aggregation_and_tagging()**: Tests retroactive tagging of all logs in a 5-minute block
 - **test_multi_project_scenario()**: Verifies all projects in a block get same context_state
 
 **Status:** All 3 tests passing ✅
 ```
-[Test 1] Context Detector Heuristics        ✅ PASS
-[Test 2] Block Aggregation & Tagging        ✅ PASS
-[Test 3] Multi-Project Scenario             ✅ PASS
+[Test 1] Context Detector Heuristics (10 rules)  ✅ PASS
+[Test 2] Block Aggregation & Tagging             ✅ PASS
+[Test 3] Multi-Project Scenario                  ✅ PASS
 ```
+
+### Phase 2 Enhanced: App Categorization (test_app_categorization.py) ✅
+
+NEW: Tests app categorization system that distinguishes productive vs. distraction apps:
+
+- **test_is_distraction_app_detection()**: Verifies apps correctly classified as distraction
+  - Tests: Discord, Telegram, WhatsApp, Twitter, Spotify, Netflix, etc.
+  - Tests: Code, PyCharm, Chrome, Terminal are NOT distraction apps
+  
+- **test_block_evaluator_distraction_tracking()**: Tests BlockEvaluator tracks distraction touches
+  - Scenario 1: 3 productivity apps = "Focused (Research)" 
+  - Scenario 2: Mix with Discord = "Distracted"
+  
+- **test_real_world_scenarios()**: Tests 5 real-world activity patterns
+  - "Debugging workflow" (VS Code → Chrome → Terminal) = Focused (Research) ✅
+  - "Distracted browsing" (Discord + Twitter touches) = Distracted ✅
+  - "Deep focus coding" = Focused ✅
+  - "Reading documentation" = Reading ✅
+  - "Away from desk" = Idle ✅
+
+**Status:** All 3 tests passing ✅
+```
+[Test 1] App Categorization Detection           ✅ PASS
+[Test 2] BlockEvaluator Distraction Tracking    ✅ PASS
+[Test 3] Real-World Scenarios                   ✅ PASS
+```
+
+**Key Improvement:** Solves the blind spot where "debugging workflow" (multiple productive app switches) was incorrectly classified as "Distracted". Now properly distinguishes:
+- ✅ Research/Debugging (productive apps) → "Focused (Research)"
+- ✅ True Distraction (Discord/Twitter touches) → "Distracted"
 
 ### Integration: End-to-End (test_integration.py)
 
@@ -171,7 +213,7 @@ def test_new_feature():
 For continuous integration, run:
 ```bash
 cd /path/to/desktop-agent
-python -m pytest test/ --tb=short --verbose
+python -m pytest test/test_phase2.py test/test_app_categorization.py --tb=short --verbose
 ```
 
 Expected output on success:
@@ -179,8 +221,11 @@ Expected output on success:
 test/test_phase2.py::test_context_detector_heuristics PASSED
 test/test_phase2.py::test_block_aggregation_and_tagging PASSED
 test/test_phase2.py::test_multi_project_scenario PASSED
-test/test_integration.py::test_blockevaluator_short_cycle PASSED
-test/test_integration.py::test_database_persistence PASSED
+test/test_app_categorization.py::test_is_distraction_app_detection PASSED
+test/test_app_categorization.py::test_block_evaluator_distraction_tracking PASSED
+test/test_app_categorization.py::test_real_world_scenarios PASSED
+
+======================== 6 passed =========================
 ```
 
 ## Next Steps
@@ -200,4 +245,5 @@ test/test_integration.py::test_database_persistence PASSED
 ---
 
 **Last Updated:** 2026-02-24
-**Status:** All Phase 1 & 2 tests passing ✅
+**Status:** All Phase 1 & 2 tests passing + App Categorization Integration ✅
+**Total Tests:** 6/6 Passing (3 Phase 2 + 3 App Categorization)

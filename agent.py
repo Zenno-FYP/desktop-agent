@@ -149,8 +149,9 @@ class DesktopAgent:
         print(f"[Agent] Database initialized: {self.db_path}")
         
         # Initialize Phase 2: Context detection via 5-minute block evaluator
-        self.context_detector = ContextDetector()
-        self.block_evaluator = BlockEvaluator(self.db, self.context_detector, block_duration_sec=300)
+        self.context_detector = ContextDetector(self.config)
+        block_duration_sec = self.config.get("block_duration_sec", 300)
+        self.block_evaluator = BlockEvaluator(self.db, self.context_detector, block_duration_sec=block_duration_sec)
         self.block_evaluator.start()
         
         # Session tracking
