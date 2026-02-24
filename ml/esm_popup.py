@@ -1,4 +1,5 @@
 """ESM (Experience Sampling Method) popup handler for collecting ground-truth verification."""
+import threading
 import tkinter as tk
 from datetime import datetime
 import logging
@@ -12,7 +13,7 @@ class ESMPopup:
     
     When BlockEvaluator detects low-confidence predictions, immediately displays
     a verification popup (if rate limits allow). User verifies while context is fresh.
-    Rate limited to 1 per 30 minutes and max 20/day to prevent notification fatigue.
+    Rate limits are configured via config.yaml.
     """
 
     def __init__(self, db, config=None, confidence_threshold: float = None):
@@ -63,8 +64,12 @@ class ESMPopup:
         self.last_popup_time = 0  # Unix timestamp of last popup
         self.popups_today = 0  # Counter for today
         self.last_reset_date = datetime.now().date()  # Daily counter reset
-        
-        logger.info("[ESM] Popup handler initialized (rate limit: 1 per 30 min, max 20/day)")
+
+        logger.info(
+            "[ESM] Popup handler initialized (min_interval_sec=%s, max_per_day=%s)",
+            int(self.min_interval_seconds),
+            self.daily_max,
+        )
 
     def queue_for_verification(self, log_ids: list, context_state: str, confidence: float):
         """Immediately show verification popup if confidence is low and rate limits allow.
@@ -74,17 +79,38 @@ class ESMPopup:
             context_state: ML's predicted context ("Focused", "Reading", etc)
             confidence: ML's confidence score (0.0-1.0)
         """
-        if confidence < self.confidence_threshold:
-            # Check rate limits before showing
-            if self._check_rate_limit():
-                logger.debug(f"[ESM] Showing popup: {context_state} ({confidence:.0%})")
-                self._display_toast(log_ids, context_state, confidence)
-            else:
-                logger.info(f"[ESM] Rate limited, skipping popup (confidence={confidence:.0%})")
+        if confidence >= self.confidence_threshold:
+            return
+
+        # Check rate limits before showing
+        if not self._check_rate_limit():
+            logger.info(f"[ESM] Rate limited, skipping popup (confidence={confidence:.0%})")
+            return
+
+        # Count the notification when it is shown (not when the user clicks).
+        now_ts = datetime.now().timestamp()
+        self.last_popup_time = now_ts
+        self.popups_today += 1
+
+        logger.debug(
+            "[ESM] Showing popup: %s (%s) (popups today: %s/%s)",
+            context_state,
+            f"{confidence:.0%}",
+            self.popups_today,
+            self.daily_max,
+        )
+
+        # Run Tk in a background thread so the evaluator thread isn't blocked.
+        threading.Thread(
+            target=self._display_toast,
+            args=(log_ids, context_state, confidence),
+            daemon=True,
+            name="ESMToast",
+        ).start()
 
 
     def _check_rate_limit(self) -> bool:
-        """Enforce 30-minute minimum interval and 20 max/day limits.
+        """Enforce configured minimum interval and max/day limits.
         
         Returns:
             True if we can show a popup, False if rate limited
@@ -97,7 +123,7 @@ class ESMPopup:
             self.last_reset_date = now.date()
             logger.debug("[ESM] Daily counter reset at midnight")
         
-        # Check minimum interval cooldown (30 minutes = 1800 seconds)
+        # Check minimum interval cooldown
         if (now.timestamp() - self.last_popup_time) < self.min_interval_seconds:
             minutes_remaining = (self.min_interval_seconds - (now.timestamp() - self.last_popup_time)) / 60
             logger.debug(f"[ESM] Cooldown: {minutes_remaining:.1f} minutes remaining")
@@ -180,9 +206,12 @@ class ESMPopup:
                 """Handle button click - record verification and close."""
                 selected['label'] = label
                 self._record_verification(log_ids, label)
-                self.last_popup_time = datetime.now().timestamp()
-                self.popups_today += 1
-                logger.info(f"[ESM] User verified: {label} (popups today: {self.popups_today}/20)")
+                logger.info(
+                    "[ESM] User verified: %s (popups today: %s/%s)",
+                    label,
+                    self.popups_today,
+                    self.daily_max,
+                )
                 toast.destroy()
                 root.destroy()
             

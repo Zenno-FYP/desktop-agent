@@ -1,4 +1,4 @@
-# Desktop Activity Monitor - Phase 1, 2 Complete | Phase 3 Partial ✅
+# Desktop Activity Monitor - Phase 1, 2 Complete | Phase 3 Complete ✅
 
 A comprehensive Windows desktop monitoring system that tracks application usage, behavioral patterns, and infers contextual information about developer focus/distraction through real-time data collection, 5-minute block evaluation, and ML-based predictions.
 
@@ -9,7 +9,7 @@ A comprehensive Windows desktop monitoring system that tracks application usage,
 | **Phase 1** | Real-time data collection (monitor/) | ✅ COMPLETE (100%) | All behavioral signals captured |
 | **Phase 2** | 5-minute block evaluation (analyze/) | ✅ COMPLETE (100%) | Heuristic + app categorization |
 | **Phase 3A** | ML model training (ml/) | ✅ COMPLETE (100%) | XGBoost 94% accuracy deployed |
-| **Phase 3B** | ESM popup collection (ml/) | ⏳ PENDING (50%) | Framework design ready, code needed |
+| **Phase 3B** | ESM popup collection (ml/) | ✅ COMPLETE (100%) | Immediate popup + rate limiting |
 | **Phase 4** | Advanced features (aggregate/) | ⏳ PENDING | Future enhancements |
 
 ## Quick Start
@@ -29,19 +29,6 @@ The agent will:
 2. Every 5 minutes, evaluate your mental state as: Focused, Reading, Distracted, or Idle (Phase 2) ✅
 3. Use ML predictions for context state with 94% accuracy (Phase 3) ✅
 4. Store all data in `data/db/zenno.db` (SQLite) ✅
-
-### Run Tests
-```bash
-# All tests
-python -m pytest test/ -v
-
-# Specific test suite
-python test/test_phase2.py           # Phase 2 block evaluation
-python test/test_phase1.py           # Phase 1 data collection  
-python test/test_integration.py      # End-to-end tests
-
-# See test/README.md for detailed testing guide
-```
 
 ## Architecture
 
@@ -63,12 +50,12 @@ ml/          (Phase 3: ML predictions) ✅
   ├── feature_extractor.py         Convert block_metrics → feature vector
   ├── train_model.py               Train XGBoost (94% accuracy)
   ├── predictor.py                 Load model + dynamic label mapping
-  └── esm_popup.py                 Collect verified labels (future)
+  └── esm_popup.py                 Collect verified labels (immediate popup)
 
 aggregate/   (Phase 4: Future summaries)
   └── (pending)
 
-storage/     (Database layer)
+database/    (Database layer)
   └── db.py                     SQLite with thread-safe WAL mode
 
 data/        (Generated models & datasets)
@@ -78,13 +65,7 @@ data/        (Generated models & datasets)
   └── datasets/
       └── training_synthetic.csv  10,000 synthetic training samples
 
-test/        (Test suite)
-  ├── test_phase1.py            Phase 1 unit tests
-  ├── test_phase2.py            Phase 2 unit tests ✅ ALL PASSING
-  ├── test_app_categorization.py Phase 2 enhancement ✅ ALL PASSING
-  ├── test_ml_integration.py     Phase 3 ML tests ✅ READY
-  ├── test_integration.py       End-to-end tests
-  └── fixtures/                 Test data and utilities
+
 ```
 
 ## Key Features
@@ -147,60 +128,7 @@ test/        (Test suite)
 
 **Key Advantage:** Each project touched in a block gets same context label (accurate for that time window)
 
-**Test Results - All Passing:**
-```
-PHASE 2 TESTS (6 tests)
-[Test 1] Context Detector Heuristics        ✅ PASS
-  ✓ Scenario 1 (High idle): Idle (85%)
-  ✓ Scenario 2 (Reading): Reading (80%)
-  ✓ Scenario 3 (Focused): Focused (92%)
-  ✓ Scenario 4 (Distracted): Distracted (70%)
 
-[Test 2] Block Aggregation & Retroactive Tagging ✅ PASS
-  ✓ All 3 logs retroactively tagged
-  ✓ All logs in block have same context
-
-[Test 3] Multi-Project Scenario ✅ PASS
-  ✓ All projects in block tagged correctly
-
-[Test 4] App Categorization Detection        ✅ PASS
-  ✓ Productivity apps identified correctly
-  ✓ Distraction apps flagged properly
-
-[Test 5] BlockEvaluator Distraction Tracking ✅ PASS
-  ✓ Discord touch detection working
-  ✓ Distracted classification accurate
-
-[Test 6] Real-World Scenarios                ✅ PASS
-  ✓ Debugging workflow (VS Code → Docs → Terminal) = Focused (Research)
-  ✓ Procrastination (Chrome → YouTube → Discord) = Distracted
-  ✓ Away from desk (high idle) = Idle
-
-PHASE 3 TESTS (ML Integration)
-[Test 1] ML Model Loading                    ✅ PASS
-  ✓ Model file exists (context_detector.pkl)
-  ✓ Label mapping loaded (context_detector_classes.pkl)
-
-[Test 2] ML Predictor Initialization         ✅ PASS
-  ✓ XGBoost model loaded successfully
-  ✓ Dynamic label decoder loaded
-
-[Test 3] ML Predictions                      ✅ PASS
-  ✓ High typing → Focused (confidence >40%)
-  ✓ Extreme idle → Idle (confidence >40%)
-  ✓ High scrolls → Reading (confidence >40%)
-  ✓ Distraction app → Distracted (confidence >40%)
-
-[Test 4] BlockEvaluator with ML              ✅ PASS
-  ✓ ML model integrated successfully
-  ✓ Predictions accurate on test logs
-
-[Test 5] ML Fallback to Heuristic            ✅ PASS
-  ✓ Low confidence triggers fallback
-  ✓ Heuristic provides backup classification
-
-======================== 11 TOTAL TESTS PASSING ========================
-```
 
 ## Database Schema
 
@@ -322,9 +250,9 @@ e:\Zenno\desktop-agent\
 │   ├── feature_extractor.py          (Convert metrics → features)
 │   ├── train_model.py                (Train XGBoost, save model)
 │   ├── predictor.py                  (Load model, make predictions)
-│   └── esm_popup.py                  (Collect verified labels - future)
+│   └── esm_popup.py                  (Collect verified labels - immediate popup)
 │
-├── storage/                 Database layer
+├── database/                Database layer
 │   ├── __init__.py
 │   └── db.py                SQLite + thread-safe operations
 │
@@ -336,16 +264,6 @@ e:\Zenno\desktop-agent\
 │   │   └── training_synthetic.csv    (3.2 MB - 10,000 rows)
 │   └── db/
 │       └── zenno.db                  (SQLite database - grows with usage)
-│
-├── test/                    Test suite ✅ (11/11 tests passing)
-│   ├── __init__.py
-│   ├── test_phase1.py               (Phase 1 data collection)
-│   ├── test_phase2.py               (Phase 2 block evaluation)
-│   ├── test_app_categorization.py   (Phase 2 enhancement)
-│   ├── test_ml_integration.py       (Phase 3 ML pipeline)
-│   ├── test_integration.py          (End-to-end tests)
-│   ├── fixtures/                    (Test data, utilities)
-│   └── README.md                    (Testing guide)
 │
 ├── plan/                    Documentation
 │   └── activity_detection_plan.md    (Architecture & implementation plan)
@@ -375,16 +293,15 @@ conn.close()
 
 ### Adding New Components
 1. Create module in appropriate folder (monitor/, analyze/, aggregate/, ml/)
-2. Add unit tests in `test/` folder
-3. Update architecture diagram in this README
-4. Update `plan/activity_detection_plan.md`
+2. Update architecture diagram in this README
+3. Update `plan/activity_detection_plan.md`
 
 ## Next Steps
 
 ### Phase 3: Continuous Improvement (Background)
-- ESM popup notifications for low-confidence blocks (<0.70)
+- ESM popup notifications for low-confidence blocks (configurable threshold)
 - User verifies predictions through simple UI clicks
-- Verified labels collected in `is_manually_verified` column
+- Verified labels collected in `manually_verified_label` / `verified_at`
 - After 1 week: Extract verified blocks from database
 - Retrain model with synthetic + real verified data
 - Deploy improved model automatically
@@ -398,17 +315,11 @@ conn.close()
 
 ### How to Retrain Model (When Real Data Available)
 ```bash
-# Extract verified blocks from database
-python -m ml.extract_verified_data
+# Regenerate synthetic dataset (optional)
+python -m ml.synthetic_data_generator
 
-# Combine synthetic + real data
-python -m ml.combine_datasets
-
-# Retrain model with improved data
-python -m ml.train_model --use-real-data
-
-# Test updated model
-python -m pytest test/test_ml_integration.py -v
+# Retrain the model on the dataset
+python -m ml.train_model
 ```
 
 ## Troubleshooting
@@ -448,8 +359,6 @@ Zubair Abbas
 
 **Last Updated:** 2026-02-24
 **Status:** Phase 1 ✅ COMPLETE | Phase 2 ✅ COMPLETE | Phase 3 ✅ COMPLETE | Phase 4 ⏳ PENDING
-
-**Test Status:** ✅ All tests passing (11/11 tests - Phase 1, 2, & 3 ready)
 
 **Model Status:** ✅ XGBoost trained with 94% accuracy
 - Training data: 10,000 synthetic samples with 8% label noise

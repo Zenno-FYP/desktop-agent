@@ -390,7 +390,7 @@ Instead of waiting 2 weeks for real data, we use a hybrid approach:
 **Part B: Experience Sampling Method (Background)**
 - While you work normally, system pops up notifications 3-4x/day on uncertain blocks (confidence < 0.70)
 - You click: [Yes, correct] or [No, actually it was Reading/Focused/etc]
-- System records verified labels with `is_manually_verified = TRUE` flag
+- System records verified labels via `manually_verified_label` / `verified_at`
 - After 1 week: Extract ~50-100 verified blocks from database
 - Retrain model with real data as it arrives (continuous improvement)
 
@@ -496,11 +496,11 @@ def train_model(csv_path='training_data.csv'):
     print(f"Accuracy: {accuracy:.2%}")  # Expected: 92-95%
     
     # Save
-    joblib.dump(model, 'storage/models/context_model.pkl')
+    joblib.dump(model, 'data/models/context_detector.pkl')
     return model
 ```
 
-**Training Result:** Model saved to `storage/models/context_model.pkl`
+**Training Result:** Model saved to `data/models/context_detector.pkl`
 
 #### 3.4.4 ML Predictor & Integration
 
@@ -508,7 +508,7 @@ def train_model(csv_path='training_data.csv'):
 
 ```python
 class MLPredictor:
-    def __init__(self, model_path='storage/models/context_model.pkl'):
+    def __init__(self, model_path='data/models/context_detector.pkl'):
         self.model = joblib.load(model_path)
         
     def predict_with_confidence(self, block_metrics):
@@ -559,95 +559,34 @@ class BlockEvaluator:
 
 **How it works:**
 1. BlockEvaluator predicts context with confidence score
-2. If confidence < 0.70 (uncertain), queue a notification
-3. During next idle moment (user pauses), show popup:
+2. If confidence < 0.70 (uncertain) and rate limits allow, show popup immediately:
    ```
-   ZENNO thinks you were "Distracted" for 2:00-2:05 PM. Correct?
-   [✓ Yes, correct]  [✗ No, Reading]  [✗ No, Focused]  [✗ No, Idle]
+    ZENNO Activity Check
+    Distracted (62%)?
+    (Is this correct?)
+    [Focused] [Reading] [Distracted] [Idle]
    ```
-4. You click within 1 second → system records verified label
-5. Database updated: `is_manually_verified = TRUE, manually_verified_label = "Reading"`
+3. You click → system records verified label
+4. Database updated: `manually_verified_label = "Reading", verified_at = <timestamp>`
 
-**Implementation:**
-```python
-import plyer  # Cross-platform notifications
-from pynput import keyboard
-
-class ESMPopup:
-    def __init__(self, db):
-        self.db = db
-        self.pending_verifications = queue.Queue()
-    
-    def show_popup(self, block_id, predicted_state, confidence):
-        """
-        Show win10toast notification with quick-select buttons
-        """
-        options = {
-            'Yes': predicted_state,
-            'Reading': 'Reading',
-            'Focused': 'Focused',
-            'Idle': 'Idle',
-        }
-        
-        message = f"ZENNO: {predicted_state} ({confidence:.0%})? Press Y/R/F/I"
-        plyer.notification.notify(
-            title="Activity Verification",
-            message=message,
-            timeout=30,  # Auto-dismiss after 30 sec if no response
-        )
-        
-        # Set up hotkey listeners for quick response
-        self._listen_for_hotkey(block_id, options)
-    
-    def _listen_for_hotkey(self, block_id, options):
-        """
-        Listen for Y/R/F/I hotkeys and record verified label
-        """
-        def on_press(key):
-            try:
-                k = key.char.upper()
-                if k == 'Y':
-                    verified_label = options['Yes']
-                elif k == 'R':
-                    verified_label = 'Reading'
-                elif k == 'F':
-                    verified_label = 'Focused'
-                elif k == 'I':
-                    verified_label = 'Idle'
-                else:
-                    return  # Ignore other keys
-                
-                # Record in database
-                self.db.update_verification(block_id, verified_label, is_verified=True)
-                print(f"✓ Block {block_id} verified as {verified_label}")
-                
-                # Stop listening
-                listener.stop()
-            except:
-                pass
-        
-        listener = keyboard.Listener(on_press=on_press)
-        listener.start()
-```
+**Implementation:** `ml/esm_popup.py` uses a small Tkinter always-on-top toast.
 
 #### 3.4.6 Database Schema Updates
 
 **Add verification columns to raw_activity_logs:**
 ```sql
-ALTER TABLE raw_activity_logs ADD COLUMN is_manually_verified BOOLEAN DEFAULT FALSE;
 ALTER TABLE raw_activity_logs ADD COLUMN manually_verified_label TEXT NULL;
 ALTER TABLE raw_activity_logs ADD COLUMN verified_at TIMESTAMP NULL;
 ```
 
 **Context:**
-- `is_manually_verified = FALSE`: Heuristic/ML prediction (uncertain)
-- `is_manually_verified = TRUE`: You clicked to confirm (ground-truth)
 - `manually_verified_label`: Your correction if different from prediction
+- `verified_at`: When the user verified the entry
 
 **Query verified blocks for retraining:**
 ```sql
 SELECT * FROM raw_activity_logs 
-WHERE is_manually_verified = TRUE
+WHERE manually_verified_label IS NOT NULL
 ORDER BY verified_at DESC
 LIMIT 100;
 ```
@@ -675,12 +614,12 @@ LIMIT 100;
 | `mouse_click_rate` | ✅ CPM calculation | 12.5 |
 | `mouse_scroll_events` | ✅ Counted | 8 |
 | `idle_duration_sec` | ✅ Accumulated | 45 |
-| `context_state` | ⏳ Phase 2 | NULL (to be filled) |
-| `confidence_score` | ⏳ Phase 2 | NULL (to be filled) |
+| `context_state` | ✅ Filled by evaluator | Focused |
+| `confidence_score` | ✅ Filled by evaluator | 0.92 |
 
 **Phase 2 Implementation (Context Detection):**
-- [ ] Heuristic rules for context_state
-- [ ] ML model for confidence_score
+- [x] Heuristic rules for context_state
+- [x] ML model for confidence_score
 
 ### Implementation: ✅
 - `agent.py` - ActivitySession class handles time tracking
@@ -712,7 +651,7 @@ class WindowSession:
 ## 5. System Architecture ✅ IMPLEMENTED (Phase 1 & 2) + ⏳ IN PROGRESS (Phase 3)
 
 **Status:** Phase 1 & 2 complete - All data collection and 5-minute block evaluation integrated
-Phase 3 - Core ML (synthetic bootstrap) complete, ESM popup collection pending
+Phase 3 - Core ML (synthetic bootstrap) complete, ESM popup collection active
 Phase 4 - Continuous retraining pending (when real data collected)
 
 ### Folder Structure (4-Stage Pipeline)
@@ -737,7 +676,7 @@ e:\Zenno\desktop-agent\
 │   ├── feature_extractor.py         (Convert metrics → features) ✅
 │   ├── train_model.py               (Train XGBoost, save model) ✅
 │   ├── predictor.py                 (Load model, make predictions) ✅
-│   └── esm_popup.py                 (ESM data collection) ⏳ PENDING
+│   └── esm_popup.py                 (ESM data collection) ✅
 │
 ├── aggregate/                   [PHASE 4: Future - Summary aggregations]
 │   └── __init__.py
@@ -759,19 +698,6 @@ e:\Zenno\desktop-agent\
 │   ├── __init__.py
 │   ├── config.py
 │   └── config.yaml
-│
-├── test/                        [Test suite - organized by phase] ✅
-│   ├── __init__.py
-│   ├── test_phase1.py           (Phase 1: Data collection tests) ✅
-│   ├── test_phase2.py           (Phase 2: Block evaluator tests) ✅
-│   ├── test_app_categorization.py (Phase 2 Enhancement) ✅
-│   ├── test_ml_integration.py   (Phase 3: ML pipeline tests) ✅
-│   ├── test_integration.py      (End-to-end agent tests)
-│   ├── fixtures/
-│   │   ├── __init__.py
-│   │   ├── sample_logs.py
-│   │   └── utilities.py
-│   └── README.md
 │
 ├── plan/                        [Documentation]
 │   └── activity_detection_plan.md (Full implementation plan & architecture)
@@ -810,7 +736,7 @@ PHASE 2: 5-Minute Block Evaluation (analyze/) ✅ COMPLETE
                 ↓
     Database Update: context_state, confidence_score populated ✅
 
-PHASE 3: ML Enhancement (ml/) ✅ PARTIAL COMPLETE
+PHASE 3: ML Enhancement (ml/) ✅ COMPLETE
     SyntheticDataGenerator ✅ → training_synthetic.csv ✅
           ↓
     FeatureExtractor ✅ → 9-dimensional features ✅
@@ -819,12 +745,11 @@ PHASE 3: ML Enhancement (ml/) ✅ PARTIAL COMPLETE
           ↓
     MLPredictor ✅ → Integrated into BlockEvaluator ✅
           ↓
-    BlockEvaluator: ML predictions + Heuristic fallback ✅
-          ↓ (PENDING: ESM popup for verified data collection)
-    Database: context_state, confidence_score populated ✅
-    
-    ESM Popup Handler ⏳ (Pending - design ready, code needed)
-    Database verification schema ⏳ (Pending)
+        BlockEvaluator: ML predictions + Heuristic fallback ✅
+            ↓
+        ESM Popup Handler ✅ (Immediate, rate-limited)
+            ↓
+        Database: context_state, confidence_score, verified labels ✅
 
 PHASE 4: Advanced Features (aggregate/) ⏳ PENDING
     ├─ Project-level summaries
@@ -918,7 +843,7 @@ def validate_activity_log(log_dict):
 - ✅ App categorization system (70+ productivity + 15+ distraction apps)
 - ✅ Distinction between productive research and true distraction
 - ✅ Thread-safe operation with UTC time consistency
-- ✅ Comprehensive test suite: 6/6 tests passing
+
 ### Phase 2: 5-Minute Block Evaluation (Week 3-4) ✅ COMPLETE + ENHANCED
 
 **Architecture: Fact-first logging + retroactive tagging** ✅ IMPLEMENTED
@@ -931,7 +856,7 @@ def validate_activity_log(log_dict):
   - ✅ Run heuristic on block metrics
   - ✅ SQL UPDATE all logs in block with context_state + confidence
   
-- ✅ Update Database class (storage/db.py)
+- ✅ Update Database class (database/db.py)
   - ✅ Add `query_logs()` method - get logs by time range + NULL context filter
   - ✅ Add `update_logs_context()` method - batch UPDATE for retroactive tagging
   - ✅ Thread-safe connection with `check_same_thread=False`
@@ -948,9 +873,9 @@ def validate_activity_log(log_dict):
   - ✅ **NEW:** Focused (Research) classification for productive switching
   - ✅ Rules: Idle, Reading, Focused, Focused (Research), Distracted, and more
   
-- ✅ Testing
-  - ✅ Verified 5-minute evaluator wakes on schedule
-  - ✅ Verified retroactive tagging applies to all logs in block
+- ✅ Validation
+    - ✅ Verified 5-minute evaluator wakes on schedule
+    - ✅ Verified retroactive tagging applies to all logs in block
   - ✅ Verified multi-project scenario: all projects in block get same tag
   - ✅ Bug fixes:
     - ✅ SQLite thread safety issue
@@ -988,7 +913,7 @@ Real-World Scenario Examples:
 
 ### Phase 3: ML Enhancement ✅ MOSTLY COMPLETE (Hybrid Synthetic/Real)
 
-**Timeline: Core ML implemented TODAY (2026-02-24) | ESM Popup ⏳ PENDING**
+**Timeline: Core ML implemented TODAY (2026-02-24) | ESM Popup ✅ ACTIVE**
 
 **Completed (Today 4-6 hours):**
 - ✅ Write Synthetic Data Generator (ml/synthetic_data_generator.py)
@@ -1022,24 +947,13 @@ Real-World Scenario Examples:
   - Logs prediction type (ML vs Heuristic) for debugging
   - Production-ready hybrid approach
   
-- ⏳ Write ESM Popup Handler (ml/esm_popup.py) - PENDING IMPLEMENTATION
-  - [TODO] Shows notification on uncertain blocks (confidence < 0.70)
-  - [TODO] Listens for Y/R/F/I hotkeys for quick verification
-  - [TODO] Records verified labels in database
-  - Design ready, implementation pending
+- ✅ Write ESM Popup Handler (ml/esm_popup.py)
+    - Shows notification on low-confidence blocks (configurable threshold)
+    - Immediate popup (no queue), rate-limited to avoid notification fatigue
+    - Records verified labels in database
   
-- ⏳ Database Schema Updates (database/db.py) - PENDING
-  - [TODO] Add is_manually_verified BOOLEAN
-  - [TODO] Add manually_verified_label TEXT
-  - [TODO] Add verified_at TIMESTAMP
-  - Schema ready for implementation
-
-- ✅ ML Integration Tests (test/test_ml_integration.py)
-  - Test 1: Model file existence ✅ PASS
-  - Test 2: ML predictor loading ✅ PASS
-  - Test 3: ML predictor predictions ✅ PASS
-  - Test 4: BlockEvaluator with ML ✅ PASS
-  - Test 5: ML fallback to heuristic ✅ PASS
+- ✅ Database Schema Updates (database/db.py)
+    - Adds `manually_verified_label` and `verified_at` columns (idempotent migration)
 
 **Phase 3 Hybrid Approach - Why This Works:**
 
@@ -1048,11 +962,10 @@ Real-World Scenario Examples:
    - Model ready for deployment immediately ✅
    - 94% accuracy sufficient for production use ✅
    
-2. **Real Data Collection (PENDING ⏳):** ESM popups during uncertainty
-   - [TODO] Implement ESM popup notifications on uncertain blocks
-   - [TODO] Users verify predictions through simple Y/R/F/I clicks
-   - [TODO] System accumulates ground-truth labels
-   - Framework design ready, implementation pending
+2. **Real Data Collection (ACTIVE ✅):** ESM popups during uncertainty
+    - ESM popup notifications trigger on low-confidence blocks (non-blocking)
+    - Users verify predictions through simple Focused/Reading/Distracted/Idle clicks
+    - System accumulates ground-truth labels in `manually_verified_label` / `verified_at`
    
 3. **Continuous Improvement (FUTURE ⏳):** Retrain as verified data arrives
    - After 1 week: ~50-100 verified blocks collected (when ESM active)
@@ -1067,23 +980,12 @@ Real-World Scenario Examples:
 - ✅ Production-ready from day 1
 
 **Pending for Continuous Improvement ⏳:**
-- ⏳ ESM popup handler implementation
-- ⏳ Database schema for verification tracking
-- ⏳ Real data collection framework
-
-### Phase 3 Pending: ESM Popup Implementation ⏳ TODO
-
-**Files to Create:**
-1. `ml/esm_popup.py` - Notification handler with hotkey listeners
-2. Update `database/db.py` - Add verification tracking columns
-3. Update `analyze/block_evaluator.py` - Hook up ESM popup queue
-
-**Estimated Effort:** 3-4 hours
+- ⏳ Automated retraining pipeline using verified labels (future)
 
 ### Phase 4: Model Retraining & Continuous Improvement ⏳ PENDING
 
 **When Real Data Available (After 1-2 weeks of ESM collection):**
-- [ ] Extract verified blocks from database (is_manually_verified = TRUE)
+- [ ] Extract verified blocks from database (manually_verified_label IS NOT NULL)
 - [ ] Combine synthetic + verified data for retraining
 - [ ] Evaluate model performance improvement
 - [ ] Retrain monthly as more data arrives
@@ -1091,91 +993,13 @@ Real-World Scenario Examples:
 
 ---
 
-## 10. Testing Strategy ✅ COMPLETE (Phase 1, 2, & 3)
-
-**Status:** All Phase 1, 2, and 3 tests passing (11/11 tests)
-
-**Test Organization:** All tests in `test/` folder with proper structure
-
-```
-test/
-├── __init__.py
-├── test_phase1.py                [Phase 1: Data collection] ✅
-├── test_phase2.py                [Phase 2: Block evaluation] ✅
-├── test_app_categorization.py    [Phase 2 Enhancement: App categorization] ✅
-├── test_ml_integration.py        [Phase 3: ML pipeline] ✅
-├── test_integration.py           [End-to-end agent tests]
-└── fixtures/
-    ├── __init__.py
-    ├── sample_logs.py
-    └── utilities.py
-```
-
-**Phase 1 Tests** (`test/test_phase1.py`) ✅
-- Component tests for each monitor/ module
-- Data validation tests
-- Integration tests for full session capture
-
-**Phase 2 Tests** (`test/test_phase2.py`) ✅
-```python
-# Test Results - All Passing
-Test 1: Context detector heuristics (10 rules)  ✅ PASS
-Test 2: Block aggregation & tagging             ✅ PASS
-Test 3: Multi-project scenario                  ✅ PASS
-```
-
-**Phase 2 Enhancement Tests** (`test/test_app_categorization.py`) ✅
-```python
-# App Categorization Integration Tests - All Passing
-Test 1: App categorization detection            ✅ PASS
-Test 2: BlockEvaluator distraction tracking     ✅ PASS
-Test 3: Real-world activity scenarios           ✅ PASS
-```
-
-**Phase 3 ML Tests** (`test/test_ml_integration.py`) ✅ NEW
-```python
-# ML Integration Tests - All Passing
-Test 1: ML model existence check                ✅ PASS
-Test 2: ML predictor loading                    ✅ PASS
-Test 3: ML predictor predictions                ✅ PASS
-Test 4: BlockEvaluator with ML                  ✅ PASS
-Test 5: ML fallback to heuristic                ✅ PASS
-```
-
-**Integration Tests** (`test/test_integration.py`) ✅
-- Full agent startup and shutdown
-- BlockEvaluator thread lifecycle
-- ML model integration with real logs
-- Heuristic fallback on prediction failures
-- Database operations under load
-- Tab switch detection accuracy
-
-**Test Utilities** (`test/fixtures/`)
-- Sample activity logs for testing
-- Mock database helpers
-- Test data generators
-
-**Running Tests:**
-```bash
-# All tests
-pytest test/
-
-# Specific test file
-pytest test/test_phase2.py -v
-
-# Specific test
-pytest test/test_phase2.py::test_heuristic_rules -v
-```
-
----
-
-## Conclusion ✅ PHASE 1, 2 COMPLETE | ✅ PHASE 3 PARTIAL | ⏳ PHASE 3-4 PENDING
+## Conclusion ✅ PHASE 1, 2 COMPLETE | ✅ PHASE 3 COMPLETE | ⏳ PHASE 4 PENDING
 
 **Status:** 
 - Phase 1: ✅ Complete - All real-time data collection implemented
 - Phase 2: ✅ Complete - 5-minute block evaluation with heuristic deployed
 - Phase 3A: ✅ Complete - Synthetic ML bootstrap deployed (94% accuracy)
-- Phase 3B: ⏳ Pending - ESM popup collection framework (design ready, code pending)
+- Phase 3B: ✅ Complete - ESM popup collection framework (immediate, rate-limited)
 - Phase 4: ⏳ Pending - Advanced features
 
 **Phase 1 Completion (100% ✅):**

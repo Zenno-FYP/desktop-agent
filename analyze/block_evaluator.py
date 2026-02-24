@@ -54,6 +54,13 @@ class BlockEvaluator:
     
     def _init_esm_popup(self) -> None:
         """Initialize ESM popup handler for ground-truth collection."""
+        if not self.config:
+            return
+
+        if not self.config.get("esm_popup.enabled", True):
+            print("[BlockEvaluator] ESM popups disabled (esm_popup.enabled=false)")
+            return
+
         try:
             from ml.esm_popup import ESMPopup
             
@@ -72,10 +79,12 @@ class BlockEvaluator:
             from ml.predictor import MLPredictor
             
             # Determine model path from config or default
-            if self.config and 'ml_model_path' in self.config:
-                model_path = Path(self.config['ml_model_path']).expanduser().resolve()
+            model_path_str = self.config.get("ml_model_path") if self.config else None
+            if model_path_str:
+                model_path = Path(model_path_str).expanduser()
+                if not model_path.is_absolute():
+                    model_path = model_path.resolve()
             else:
-                # Default path
                 model_path = Path(__file__).parent.parent / "data" / "models" / "context_detector.pkl"
             
             if model_path.exists():
@@ -161,7 +170,7 @@ class BlockEvaluator:
                 confidence_score=confidence_score
             )
             
-            # Phase 3B: Queue uncertain blocks for ESM verification (non-blocking)
+            # Phase 3B: Prompt immediate verification for low-confidence blocks (non-blocking)
             if self.esm_popup and confidence_score < self.ml_confidence_threshold:
                 self.esm_popup.queue_for_verification(
                     log_ids=log_ids,
