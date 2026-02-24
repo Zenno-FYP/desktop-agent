@@ -19,7 +19,11 @@ class Database:
 
     def connect(self):
         """Open connection and enable WAL mode."""
-        self.conn = sqlite3.connect(str(self.db_path))
+        self.conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,  # Allow use in different threads (safe with WAL mode)
+            timeout=10.0  # Wait up to 10 seconds for locks
+        )
         # Enable WAL mode for better concurrency
         self.conn.execute("PRAGMA journal_mode=WAL")
         # Enable foreign keys
@@ -156,3 +160,91 @@ class Database:
             log_dict['typing_intensity'] = 200
         
         return True
+    
+    def query_logs(self, start_time: str, end_time: str, 
+                   where_context_is_null: bool = False) -> list:
+        """Query activity logs within a time range.
+        
+        Args:
+            start_time: ISO format start time (e.g., "2026-02-24T14:05:00")
+            end_time: ISO format end time
+            where_context_is_null: If True, only return logs with context_state IS NULL
+        
+        Returns:
+            List of log dictionaries from the query
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected. Call connect() first.")
+        
+        query = """
+            SELECT * FROM raw_activity_logs 
+            WHERE start_time >= ? AND start_time < ?
+        """
+        params = [start_time, end_time]
+        
+        if where_context_is_null:
+            query += " AND context_state IS NULL"
+        
+        query += " ORDER BY start_time ASC"
+        
+        cursor = self.conn.execute(query, params)
+        rows = cursor.fetchall()
+        
+        # Convert sqlite3.Row to dict using column names
+        result = []
+        for row in rows:
+            result.append({
+                'log_id': row[0],
+                'start_time': row[1],
+                'end_time': row[2],
+                'app_name': row[3],
+                'window_title': row[4],
+                'duration_sec': row[5],
+                'project_name': row[6],
+                'project_path': row[7],
+                'active_file': row[8],
+                'detected_language': row[9],
+                'typing_intensity': row[10],
+                'mouse_click_rate': row[11],
+                'mouse_scroll_events': row[12],
+                'idle_duration_sec': row[13],
+                'context_state': row[14],
+                'confidence_score': row[15],
+            })
+        
+        return result
+    
+    def update_logs_context(self, log_ids: list, context_state: str, 
+                           confidence_score: float) -> int:
+        """Retroactively tag logs with context state and confidence.
+        
+        Used by BlockEvaluator to batch-update all logs in a 5-minute block
+        with the aggregated context evaluation.
+        
+        Args:
+            log_ids: List of log_id integers to update
+            context_state: Context state to set (e.g., "Focused")
+            confidence_score: Confidence score to set (0.0-1.0)
+        
+        Returns:
+            Number of rows updated
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected. Call connect() first.")
+        
+        if not log_ids:
+            return 0
+        
+        # Build parameterized query (avoid SQL injection)
+        placeholders = ','.join('?' * len(log_ids))
+        query = f"""
+            UPDATE raw_activity_logs 
+            SET context_state = ?, confidence_score = ?
+            WHERE log_id IN ({placeholders})
+        """
+        
+        params = [context_state, confidence_score] + log_ids
+        cursor = self.conn.execute(query, params)
+        self.conn.commit()
+        
+        return cursor.rowcount

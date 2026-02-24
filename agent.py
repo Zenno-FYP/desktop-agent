@@ -12,31 +12,36 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config.config import Config
 from storage.db import Database
-from observer.app_focus import get_active_window
-from observer.behavioral_metrics import BehavioralMetrics
-from observer.idle_detector import IdleDetector
-from observer.project_detector import ProjectDetector
+from monitor.app_focus import get_active_window
+from monitor.behavioral_metrics import BehavioralMetrics
+from monitor.idle_detector import IdleDetector
+from monitor.project_detector import ProjectDetector
+from analyze.context_detector import ContextDetector
+from analyze.block_evaluator import BlockEvaluator
 
 
 class ActivitySession:
     """Track a single application/window session with all behavioral data."""
 
-    def __init__(self, app_name: str, window_title: str, pid: Optional[int] = None):
+    def __init__(self, app_name: str, window_title: str, pid: Optional[int] = None, 
+                 idle_threshold_sec: int = 10, click_debounce_ms: int = 50):
         """Initialize new activity session.
         
         Args:
             app_name: Application name
             window_title: Window title
             pid: Process ID (optional)
+            idle_threshold_sec: Seconds of inactivity before marking as idle (default 10)
+            click_debounce_ms: Ignore clicks closer than this (ms) - default 50
         """
         self.start_time = datetime.utcnow().isoformat()
         self.app_name = app_name
         self.window_title = window_title
         self.pid = pid
         
-        # Initialize behavioral tracking
-        self.metrics = BehavioralMetrics()
-        self.idle_detector = IdleDetector(idle_threshold_sec=5)
+        # Initialize behavioral tracking with config values
+        self.metrics = BehavioralMetrics(click_debounce_ms=click_debounce_ms)
+        self.idle_detector = IdleDetector(idle_threshold_sec=idle_threshold_sec)
         self.project_detector = ProjectDetector()
         
         # Track file changes (for tab switching)
@@ -138,6 +143,8 @@ class DesktopAgent:
         self.config = Config(config_path) if config_path else Config()
         self.sample_interval = self.config.get("sample_interval_sec", 2)
         self.flush_interval = self.config.get("flush_interval_sec", 300)  # 5 min default
+        self.idle_threshold_sec = self.config.get("idle_threshold_sec", 10)
+        self.click_debounce_ms = self.config.get("behavioral_metrics.click_debounce_ms", 50)
         self.db_path = self.config.get("db.path", "./agent.db")
         
         # Initialize database
@@ -145,6 +152,12 @@ class DesktopAgent:
         self.db.connect()
         self.db.create_tables()
         print(f"[Agent] Database initialized: {self.db_path}")
+        
+        # Initialize Phase 2: Context detection via 5-minute block evaluator
+        self.context_detector = ContextDetector(self.config)
+        block_duration_sec = self.config.get("block_duration_sec", 300)
+        self.block_evaluator = BlockEvaluator(self.db, self.context_detector, block_duration_sec=block_duration_sec)
+        self.block_evaluator.start()
         
         # Session tracking
         self.current_session = None
@@ -167,7 +180,10 @@ class DesktopAgent:
                         self._flush_session()
                     
                     if app_name:
-                        self.current_session = ActivitySession(app_name, window_title, pid)
+                        self.current_session = ActivitySession(
+                            app_name, window_title, pid, 
+                            self.idle_threshold_sec, self.click_debounce_ms
+                        )
                         self.current_app = app_name
                 
                 # Handle file change within same app (e.g., Tab switch in VS Code)
@@ -177,9 +193,12 @@ class DesktopAgent:
                         # Flush current file's session
                         self._flush_session()
                         # Start new file session (same app, different file)
-                        self.current_session = ActivitySession(app_name, window_title, pid)
+                        self.current_session = ActivitySession(
+                            app_name, window_title, pid,
+                            self.idle_threshold_sec, self.click_debounce_ms
+                        )
                         new_file = self.current_session.current_file
-                        print(f"[Tab Switch] {old_file} → {new_file}")
+                        print(f"[Tab Switch] {old_file} -> {new_file}")
                     else:
                         # Same file, just update window title
                         self.current_session.update_file_context(window_title)
@@ -196,7 +215,11 @@ class DesktopAgent:
                         self._flush_session()
                         # Restart session if still on same app
                         if self.current_app:
-                            self.current_session = ActivitySession(self.current_app, window_title)
+                            self.current_session = ActivitySession(
+                                self.current_app, window_title,
+                                idle_threshold_sec=self.idle_threshold_sec,
+                                click_debounce_ms=self.click_debounce_ms
+                            )
                 
                 time.sleep(self.sample_interval)
         
@@ -236,6 +259,9 @@ class DesktopAgent:
     def _shutdown(self):
         """Graceful shutdown."""
         print("[Agent] Shutting down...")
+        
+        # Stop background block evaluator
+        self.block_evaluator.stop()
         
         # Flush final session
         if self.current_session:
