@@ -1,4 +1,5 @@
 """Active app tracker for Windows."""
+import logging
 import ctypes
 from ctypes import wintypes
 
@@ -55,5 +56,5 @@ def get_active_window():
         return app_name, window_title, pid_value
 
     except Exception as e:
-        print(f"Error getting active window: {e}")
+        logging.getLogger(__name__).exception("Error getting active window")
         return None, None, None

@@ -1,16 +1,20 @@
-"""5-Minute rolling block evaluator for context state detection."""
+"""Rolling block evaluator for context state detection."""
+import logging
 import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# Phase 4: Aggregation
+from aggregate.etl_pipeline import ETLPipeline
+
 
 class BlockEvaluator:
     """Background evaluator that retroactively tags activity logs with context state.
     
-    Runs on a 5-minute heartbeat with ML-based predictions:
-    1. Wakes up every 5 minutes (e.g., at 2:00, 2:05, 2:10 PM)
-    2. Queries all unevaluated logs (context_state IS NULL) from the last 5 minutes
+    Runs on a configurable heartbeat (block_duration_sec) with ML-based predictions:
+    1. Wakes up every block (e.g., at 2:00, 2:05, 2:10 PM when block=5 min)
+    2. Queries all unevaluated logs (context_state IS NULL) from the last block
     3. Aggregates behavioral metrics across all sessions in that block
     4. Extracts 9-dimensional feature vector from block metrics
     5. Runs ML model (XGBoost) on features for prediction
@@ -18,39 +22,58 @@ class BlockEvaluator:
     7. Retroactively updates all logs in the block with context_state + confidence_score
     """
     
-    def __init__(self, db, context_detector, config=None, block_duration_sec: int = 300, use_ml: bool = True):
+    def __init__(self, db, context_detector, config=None, block_duration_sec: int = None, use_ml: bool = True):
         """Initialize the BlockEvaluator.
         
         Args:
             db: Database instance for querying and updating logs
             context_detector: ContextDetector instance for heuristic fallback
-            config: Config instance for reading ML settings (optional)
-            block_duration_sec: Duration of evaluation blocks in seconds (default: 300 = 5 min)
+            config: Config instance for reading settings (optional)
+            block_duration_sec: Duration of evaluation blocks in seconds. If None, reads from config.
+                               Falls back to default 300 seconds if not specified in config
             use_ml: Whether to use ML model (default: True). Falls back to heuristic if model unavailable
                     Overrides config['ml_enabled'] if explicitly set to False
         """
         self.db = db
         self.context_detector = context_detector
         self.config = config
-        self.block_duration_sec = block_duration_sec
+        
+        # Read block_duration_sec from config first, then parameter, then default to 300
+        if config:
+            self.block_duration_sec = config.get('block_duration_sec', block_duration_sec or 300)
+        else:
+            self.block_duration_sec = block_duration_sec or 300
+        
         self.thread = None
         self.running = False
         self.ml_predictor = None
         self.use_ml = use_ml
         self.ml_available = False
-        self.ml_confidence_threshold = 0.5  # Default threshold
+        self.ml_confidence_threshold = 0.5  # Default threshold (overridden by config below)
+        self.esm_confidence_threshold = None  # Optional; only prompts when set
         self.esm_popup = None  # Phase 3B: ESM popup handler
+
+        self.logger = logging.getLogger(__name__)
         
         # Read ML settings from config if available
         if config:
             self.use_ml = config.get('ml_enabled', use_ml)
             self.ml_confidence_threshold = config.get('ml_confidence_threshold', 0.5)
+            # Read ESM popup threshold from config
+            esm_config = config.get('esm_popup', {})
+            self.esm_confidence_threshold = esm_config.get('confidence_threshold')
+            # If not explicitly configured, default ESM prompting threshold to ML threshold.
+            if self.esm_confidence_threshold is None:
+                self.esm_confidence_threshold = self.ml_confidence_threshold
         
         # Try to load ML model
         if self.use_ml:
             self._init_ml()
             # Phase 3B: Initialize ESM popup handler for verification collection
             self._init_esm_popup()
+        
+        # Phase 4: Initialize ETL Pipeline (Maestro) for coordinating all aggregators
+        self.etl_pipeline = ETLPipeline(db, config=config)
     
     def _init_esm_popup(self) -> None:
         """Initialize ESM popup handler for ground-truth collection."""
@@ -58,7 +81,7 @@ class BlockEvaluator:
             return
 
         if not self.config.get("esm_popup.enabled", True):
-            print("[BlockEvaluator] ESM popups disabled (esm_popup.enabled=false)")
+            self.logger.info("ESM popups disabled (esm_popup.enabled=false)")
             return
 
         try:
@@ -68,33 +91,42 @@ class BlockEvaluator:
                 db=self.db,
                 config=self.config
             )
-            print(f"[BlockEvaluator] ESM popup handler initialized")
+            self.logger.info("ESM popup handler initialized")
         except Exception as e:
-            print(f"[BlockEvaluator] Failed to initialize ESM popup: {e}")
+            self.logger.exception("Failed to initialize ESM popup")
             self.esm_popup = None
     
     def _init_ml(self) -> None:
-        """Initialize ML model."""
+        """Initialize ML model from config.yaml path."""
         try:
             from ml.predictor import MLPredictor
             
-            # Determine model path from config or default
-            model_path_str = self.config.get("ml_model_path") if self.config else None
-            if model_path_str:
-                model_path = Path(model_path_str).expanduser()
-                if not model_path.is_absolute():
-                    model_path = model_path.resolve()
-            else:
-                model_path = Path(__file__).parent.parent / "data" / "models" / "context_detector.pkl"
+            # Read model path from config (required for this phase)
+            if not self.config:
+                self.logger.info("No config provided, ML disabled")
+                self.ml_available = False
+                return
+            
+            model_path_str = self.config.get("ml_model_path")
+            if not model_path_str:
+                self.logger.info("ml_model_path not configured in config.yaml, ML disabled")
+                self.ml_available = False
+                return
+            
+            # Resolve path: handle relative paths and expand ~
+            model_path = Path(model_path_str).expanduser()
+            if not model_path.is_absolute():
+                # Relative paths are relative to workspace root
+                model_path = Path(__file__).parent.parent / model_path_str
             
             if model_path.exists():
                 self.ml_predictor = MLPredictor(str(model_path))
                 self.ml_available = True
-                print(f"[BlockEvaluator] ML model loaded from {model_path}")
+                self.logger.info("ML model loaded from %s", model_path)
             else:
-                print(f"[BlockEvaluator] ML model not found at {model_path}, using heuristic fallback")
+                self.logger.info("ML model not found at %s, using heuristic fallback", model_path)
         except Exception as e:
-            print(f"[BlockEvaluator] Failed to load ML model: {e}, using heuristic fallback")
+            self.logger.exception("Failed to load ML model; using heuristic fallback")
             self.ml_available = False
     
     def start(self) -> None:
@@ -108,7 +140,8 @@ class BlockEvaluator:
         self.running = True
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
-        print(f"[BlockEvaluator] Started background thread (5-min heartbeat)")
+        minutes = self.block_duration_sec / 60
+        self.logger.info("Started background thread (%g-min heartbeat)", minutes)
     
     def stop(self) -> None:
         """Stop the background evaluator thread and clean up resources."""
@@ -119,18 +152,31 @@ class BlockEvaluator:
         if self.esm_popup:
             self.esm_popup.stop()
             self.esm_popup = None
-        print(f"[BlockEvaluator] Stopped background thread")
+        self.logger.info("Stopped background thread")
     
     def _run_loop(self) -> None:
-        """Main loop: wake every 5 minutes and evaluate the last block."""
+        """Main loop: wake at wall-clock boundaries (e.g., 2:00, 2:05, 2:10) and evaluate.
+        
+        Phase 2 Hardening: Align to exact block boundaries instead of sleeping for a fixed
+        duration. This prevents heartbeat drift and makes aggregation scheduling predictable.
+        """
         while self.running:
             try:
-                time.sleep(self.block_duration_sec)
+                # Compute seconds until next block boundary
+                now = datetime.utcnow()
+                seconds_since_epoch = now.timestamp()
+                remainder = seconds_since_epoch % float(self.block_duration_sec)
+                seconds_until_next_boundary = float(self.block_duration_sec) - remainder
+                # Guard against pathological 0-second sleeps.
+                if seconds_until_next_boundary <= 0.001:
+                    seconds_until_next_boundary = float(self.block_duration_sec)
+                
+                # Sleep until next boundary (max sleep_duration is block_duration_sec)
+                time.sleep(seconds_until_next_boundary)
+                
                 self.evaluate_block()
             except Exception as e:
-                print(f"[BlockEvaluator] Error in evaluation loop: {e}")
-                import traceback
-                traceback.print_exc()
+                self.logger.exception("Error in evaluation loop")
     
     def evaluate_block(self) -> None:
         """Evaluate the most recent block of unevaluated logs.
@@ -138,16 +184,23 @@ class BlockEvaluator:
         Queries all NULL-context logs from the last 5 minutes,
         aggregates their metrics, determines context state using ML,
         and retroactively tags them all.
+        
+        Phase 2 Hardening Improvements:
+        - Queries by end_time (not start_time) to catch long sessions that span blocks
+        - Runs at wall-clock boundaries (via _run_loop) for stable, predictable scheduling
         """
         now = datetime.utcnow()  # Use UTC to match agent's logging
-        five_mins_ago = now - timedelta(seconds=self.block_duration_sec)
+        block_start_time = now - timedelta(seconds=self.block_duration_sec)
         
         try:
-            # Query unevaluated logs from last 5-minute block
+            # Query unevaluated logs from the last block.
+            # Phase 2 Hardening: query_by_end_time=True (default) ensures we catch sessions
+            # that started before the block but ended within it (prevents "never-tagged" logs).
             logs = self.db.query_logs(
-                start_time=five_mins_ago.isoformat(),
+                start_time=block_start_time.isoformat(),
                 end_time=now.isoformat(),
-                where_context_is_null=True
+                where_context_is_null=True,
+                query_by_end_time=True
             )
             
             if not logs:
@@ -171,24 +224,36 @@ class BlockEvaluator:
             )
             
             # Phase 3B: Prompt immediate verification for low-confidence blocks (non-blocking)
-            if self.esm_popup and confidence_score < self.ml_confidence_threshold:
+            if (
+                self.esm_popup
+                and self.esm_confidence_threshold is not None
+                and confidence_score < float(self.esm_confidence_threshold)
+            ):
                 self.esm_popup.queue_for_verification(
                     log_ids=log_ids,
                     context_state=context_state,
                     confidence=confidence_score
                 )
             
+            # Phase 4: Run ETL pipeline (Maestro coordinates all aggregations)
+            self.etl_pipeline.run()
+            
             # Log the evaluation
-            block_start = five_mins_ago.strftime("%H:%M")
+            block_start = block_start_time.strftime("%H:%M")
             block_end = now.strftime("%H:%M")
             model_type = "ML" if self.ml_available else "Heuristic"
-            print(
-                f"[BlockEvaluator] {block_start}-{block_end}: "
-                f"{updated_count} logs → {context_state} ({confidence_score:.0%}) [{model_type}]"
+            self.logger.info(
+                "%s-%s: %s logs → %s (%.0f%%) [%s]",
+                block_start,
+                block_end,
+                updated_count,
+                context_state,
+                confidence_score * 100.0,
+                model_type,
             )
             
         except Exception as e:
-            print(f"[BlockEvaluator] Error evaluating block: {e}")
+            self.logger.exception("Error evaluating block")
     
     def _predict_context(self, block_metrics: dict) -> tuple:
         """Predict context state using ML model with heuristic fallback.
@@ -221,7 +286,7 @@ class BlockEvaluator:
             return self.context_detector.detect_context(block_metrics)
     
     def _aggregate_block_metrics(self, logs: list) -> dict:
-        """Aggregate behavioral metrics from all sessions in a 5-minute block.
+        """Aggregate behavioral metrics from all sessions in a block.
         
         Takes individual session metrics and combines them into block-level metrics
         that represent the developer's overall behavioral state during the block.

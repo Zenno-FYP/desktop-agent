@@ -15,12 +15,14 @@ import joblib
 import numpy as np
 from pathlib import Path
 from datetime import datetime
-import sys
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+try:
+    from ml.feature_extractor import FeatureExtractor
+except ModuleNotFoundError:
+    import sys
 
-from ml.feature_extractor import FeatureExtractor
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from ml.feature_extractor import FeatureExtractor
 
 
 class MLPredictor:

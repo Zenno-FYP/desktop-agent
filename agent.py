@@ -2,13 +2,10 @@
 Zenno Desktop Agent - Entry Point (Phase 1: Core Activity Detection)
 """
 import time
-import sys
+import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
-
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
 
 from config.config import Config
 from database.db import Database
@@ -18,13 +15,21 @@ from monitor.idle_detector import IdleDetector
 from monitor.project_detector import ProjectDetector
 from analyze.context_detector import ContextDetector
 from analyze.block_evaluator import BlockEvaluator
+from aggregate.loc_scanner import LOCScanner
 
 
 class ActivitySession:
     """Track a single application/window session with all behavioral data."""
 
-    def __init__(self, app_name: str, window_title: str, pid: Optional[int] = None, 
-                 idle_threshold_sec: int = 10, click_debounce_ms: int = 50):
+    def __init__(
+        self,
+        app_name: str,
+        window_title: str,
+        pid: Optional[int] = None,
+        idle_threshold_sec: int = 10,
+        metrics: Optional[BehavioralMetrics] = None,
+        config=None,
+    ):
         """Initialize new activity session.
         
         Args:
@@ -38,20 +43,22 @@ class ActivitySession:
         self.app_name = app_name
         self.window_title = window_title
         self.pid = pid
+
+        self.logger = logging.getLogger(__name__)
         
-        # Initialize behavioral tracking with config values
-        self.metrics = BehavioralMetrics(click_debounce_ms=click_debounce_ms)
+        # Behavioral tracking is global (listeners started once by DesktopAgent).
+        # Per-session metrics are obtained by resetting counters at session start.
+        self.metrics = metrics or BehavioralMetrics()
+        self.metrics.reset()
         self.idle_detector = IdleDetector(idle_threshold_sec=idle_threshold_sec)
-        self.project_detector = ProjectDetector()
+        self.project_detector = ProjectDetector(config=config)
         
         # Track file changes (for tab switching)
         project, file = self.project_detector.detect_project(app_name, window_title)
         self.current_file = file
         self.current_project = project
         
-        self.metrics.start_listening()
-        
-        print(f"[Session] Started: {app_name} | {window_title} | File: {file}")
+        self.logger.info("[Session] Started: %s | %s | File: %s", app_name, window_title, file)
 
     def collect_data(self) -> dict:
         """Collect all behavioral data for this session.
@@ -126,9 +133,8 @@ class ActivitySession:
         self.window_title = new_window_title
 
     def end_session(self):
-        """End the session and stop listening for inputs."""
-        self.metrics.stop_listening()
-        print(f"[Session] Ended: {self.app_name}")
+        """End the session."""
+        self.logger.info("[Session] Ended: %s", self.app_name)
 
 
 class DesktopAgent:
@@ -141,33 +147,86 @@ class DesktopAgent:
             config_path: Optional path to config file
         """
         self.config = Config(config_path) if config_path else Config()
+        self._setup_logging()
         self.sample_interval = self.config.get("sample_interval_sec", 2)
-        self.flush_interval = self.config.get("flush_interval_sec", 300)  # 5 min default
+        self.flush_interval = self.config.get("flush_interval_sec", 300)
         self.idle_threshold_sec = self.config.get("idle_threshold_sec", 10)
         self.click_debounce_ms = self.config.get("behavioral_metrics.click_debounce_ms", 50)
+
+        self.logger = logging.getLogger(__name__)
+
+        # Global input listeners (do not start/stop per session).
+        self.metrics = BehavioralMetrics(click_debounce_ms=int(self.click_debounce_ms))
         self.db_path = self.config.get("db.path", "./agent.db")
+        db_check_same_thread = self.config.get("db.check_same_thread", False)
+        db_timeout = self.config.get("db.timeout", 10.0)
+        db_journal_mode = self.config.get("db.journal_mode", "WAL")
         
         # Initialize database
-        self.db = Database(self.db_path)
+        self.db = Database(
+            self.db_path,
+            check_same_thread=db_check_same_thread,
+            timeout=db_timeout,
+            journal_mode=db_journal_mode,
+            config=self.config,
+        )
         self.db.connect()
         self.db.create_tables()
-        print(f"[Agent] Database initialized: {self.db_path}")
+        self.logger.info("[Agent] Database initialized: %s", self.db_path)
         
-        # Initialize Phase 2: Context detection via 5-minute block evaluator
+        # Initialize Phase 2: Context detection via block evaluator
         self.context_detector = ContextDetector(self.config)
         block_duration_sec = self.config.get("block_duration_sec", 300)
         self.block_evaluator = BlockEvaluator(self.db, self.context_detector, config=self.config, block_duration_sec=block_duration_sec)
         self.block_evaluator.start()
         
+        # Initialize Phase 4: LOC Scanner (triggered on idle time)
+        self.loc_scanner = LOCScanner(self.db, config=self.config)
+        self.loc_scan_interval_sec = self.config.get("loc_scanner.scan_interval_sec", 3600)  # 1 hour default
+        self.loc_scan_idle_ratio_threshold = self.config.get("loc_scanner.idle_ratio_threshold", 0.3)
+        self.last_loc_scan_time = 0
+        
         # Session tracking
         self.current_session = None
         self.current_app = None
         
+        # Sticky project tracking (shift-left sticky project logic from aggregation to collection)
+        # When switching to generic app (browser, terminal), inherit last detected project if within TTL
+        self.sticky_project_name = None  # Last detected project name
+        self.sticky_last_seen = None     # When it was last seen (ISO format)
+        self.sticky_ttl_sec = self.config.get("etl_pipeline.sticky_project_ttl_sec", 900)  # 15 min default
+        
+        # Recover sticky project from last session (survive agent restart)
+        self._recover_sticky_project()
+        
         self.last_flush_time = time.time()
+
+    def _setup_logging(self):
+        """Initialize Python logging from config.yaml (if present)."""
+        cfg = self.config.get("logging", {}) or {}
+        level_name = str(cfg.get("level", "INFO")).upper()
+        log_level = getattr(logging, level_name, logging.INFO)
+        log_format = cfg.get("format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        log_file = cfg.get("file")
+
+        handlers = [logging.StreamHandler()]
+        if log_file:
+            try:
+                log_path = Path(str(log_file))
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                handlers.append(logging.FileHandler(log_path, encoding="utf-8"))
+            except Exception:
+                # If file handler fails, continue with console logging.
+                pass
+
+        logging.basicConfig(level=log_level, format=log_format, handlers=handlers)
 
     def start(self):
         """Start the monitoring loop."""
-        print("[Agent] Starting desktop activity monitoring...")
+        self.logger.info("[Agent] Starting desktop activity monitoring...")
+
+        # Start global keyboard/mouse listeners once.
+        self.metrics.start_listening()
         
         try:
             while True:
@@ -181,8 +240,12 @@ class DesktopAgent:
                     
                     if app_name:
                         self.current_session = ActivitySession(
-                            app_name, window_title, pid, 
-                            self.idle_threshold_sec, self.click_debounce_ms
+                            app_name,
+                            window_title,
+                            pid,
+                            idle_threshold_sec=self.idle_threshold_sec,
+                            metrics=self.metrics,
+                            config=self.config,
                         )
                         self.current_app = app_name
                 
@@ -194,11 +257,15 @@ class DesktopAgent:
                         self._flush_session()
                         # Start new file session (same app, different file)
                         self.current_session = ActivitySession(
-                            app_name, window_title, pid,
-                            self.idle_threshold_sec, self.click_debounce_ms
+                            app_name,
+                            window_title,
+                            pid,
+                            idle_threshold_sec=self.idle_threshold_sec,
+                            metrics=self.metrics,
+                            config=self.config,
                         )
                         new_file = self.current_session.current_file
-                        print(f"[Tab Switch] {old_file} -> {new_file}")
+                        self.logger.info("[Tab Switch] %s -> %s", old_file, new_file)
                     else:
                         # Same file, just update window title
                         self.current_session.update_file_context(window_title)
@@ -218,23 +285,138 @@ class DesktopAgent:
                             self.current_session = ActivitySession(
                                 self.current_app, window_title,
                                 idle_threshold_sec=self.idle_threshold_sec,
-                                click_debounce_ms=self.click_debounce_ms
+                                click_debounce_ms=self.click_debounce_ms,
+                                config=self.config,
                             )
+                
+                # Check idle and trigger LOC scanning
+                self._check_idle_and_scan_loc()
                 
                 time.sleep(self.sample_interval)
         
         except KeyboardInterrupt:
-            print("\n[Agent] Shutdown signal received...")
+            self.logger.info("[Agent] Shutdown signal received...")
             self._shutdown()
 
+    def _recover_sticky_project(self):
+        """Recover sticky project from database on agent startup.
+        
+        This allows the agent to survive restarts by querying the last activity log
+        that has a non-NULL project_name. If it's within the TTL, we consider it
+        the "active" project and seed it into memory.
+        
+        This implements the "shift-left" sticky project logic at collection time.
+        """
+        try:
+            cursor = self.db.conn.execute(
+                """
+                SELECT project_name, end_time FROM raw_activity_logs 
+                WHERE project_name IS NOT NULL 
+                ORDER BY end_time DESC LIMIT 1
+                """
+            )
+            row = cursor.fetchone()
+            
+            if row:
+                project_name, end_time_str = row
+                # Parse the end_time ISO format
+                end_dt = datetime.fromisoformat(end_time_str)
+                current_dt = datetime.utcnow()
+                elapsed_sec = (current_dt - end_dt).total_seconds()
+                
+                # If less than TTL, restore to sticky state
+                if elapsed_sec <= self.sticky_ttl_sec:
+                    self.sticky_project_name = project_name
+                    self.sticky_last_seen = end_time_str
+                    self.logger.info(
+                        "[Agent] Recovered sticky project '%s' (%.0fs ago, TTL=%ss)",
+                        project_name,
+                        elapsed_sec,
+                        self.sticky_ttl_sec,
+                    )
+                else:
+                    self.logger.info(
+                        "[Agent] Last project '%s' expired (%.0fs ago > TTL=%ss)",
+                        project_name,
+                        elapsed_sec,
+                        self.sticky_ttl_sec,
+                    )
+        except Exception as e:
+            self.logger.exception("[Agent] Could not recover sticky project")
+
+    def _is_sticky_ttl_valid(self) -> bool:
+        """Check if sticky project is still within TTL.
+        
+        Returns:
+            bool: True if sticky_project_name exists and is within TTL window
+        """
+        if not self.sticky_last_seen or not self.sticky_project_name:
+            return False
+        
+        try:
+            last_seen_dt = datetime.fromisoformat(self.sticky_last_seen)
+            current_dt = datetime.utcnow()
+            elapsed_sec = (current_dt - last_seen_dt).total_seconds()
+            return elapsed_sec <= self.sticky_ttl_sec
+        except Exception:
+            return False
+
+    def _apply_sticky_project(self, activity_data: dict) -> dict:
+        """Apply sticky project logic to activity data.
+        
+        Shift-left strategy: When collecting raw data, if a generic app (browser, terminal)
+        has no project context, inherit the last-detected project if within 15-min TTL.
+        
+        This is implemented at collection time, not aggregation time, so the database
+        is clean from the start.
+        
+        Args:
+            activity_data: dict with activity data (may have project_name=None)
+            
+        Returns:
+            dict: activity_data with potentially filled-in project_name
+        """
+        current_project = activity_data.get('project_name')
+        current_app = activity_data.get('app_name')
+        current_time = activity_data.get('end_time')
+        
+        # Case 1: Real project detected (IDE)
+        # Update sticky state and return as-is
+        if current_project:
+            self.sticky_project_name = current_project
+            self.sticky_last_seen = current_time
+            # print(f"[Sticky] Updated to project: {current_project}")
+            return activity_data
+        
+        # Case 2: No project detected (generic app like browser)
+        # Check if we can use sticky project
+        if self._is_sticky_ttl_valid():
+            activity_data['project_name'] = self.sticky_project_name
+            # print(f"[Sticky] Applied sticky project '{self.sticky_project_name}' to {current_app}")
+        else:
+            # TTL expired or no sticky project
+            activity_data['project_name'] = None
+            # print(f"[Sticky] No valid sticky project for {current_app}")
+        
+        return activity_data
+
     def _flush_session(self):
-        """Flush current session to database."""
+        """Flush current session to database.
+        
+        Applies sticky project logic at collection time (shift-left):
+        If the session has no detected project (generic app), inherit last-detected
+        project if within TTL (15 min default).
+        """
         if not self.current_session:
             return
         
         try:
             self.current_session.end_session()
             activity_data = self.current_session.collect_data()
+            
+            # Shift-Left Sticky Project: Apply at collection time, not aggregation
+            # This cleans the raw data immediately, no need for ETL aggregation logic
+            activity_data = self._apply_sticky_project(activity_data)
             
             # Validate before insertion
             self.db.validate_activity_log(activity_data)
@@ -243,22 +425,59 @@ class DesktopAgent:
             log_id = self.db.insert_activity_log(activity_data)
             
             # Enhanced debug output with file info
-            print(f"[DB] Inserted log #{log_id}: {activity_data['app_name']} "
-                  f"({activity_data['duration_sec']}s) | File: {activity_data['active_file']} | "
-                  f"KPM:{activity_data['typing_intensity']:.1f} CPM:{activity_data['mouse_click_rate']:.1f} "
-                  f"Scrolls:{activity_data['mouse_scroll_events']} Idle:{activity_data['idle_duration_sec']}s")
+            self.logger.info(
+                "[DB] Inserted log #%s: %s (%ss) | File: %s | Project: %s | KPM:%.1f CPM:%.1f Scrolls:%s Idle:%ss",
+                log_id,
+                activity_data.get("app_name"),
+                activity_data.get("duration_sec"),
+                activity_data.get("active_file"),
+                activity_data.get("project_name"),
+                float(activity_data.get("typing_intensity", 0.0)),
+                float(activity_data.get("mouse_click_rate", 0.0)),
+                activity_data.get("mouse_scroll_events"),
+                activity_data.get("idle_duration_sec"),
+            )
             
             self.last_flush_time = time.time()
             self.current_session = None
         
         except Exception as e:
-            print(f"[Error] Failed to flush session: {e}")
-            import traceback
-            traceback.print_exc()
+            self.logger.exception("[Error] Failed to flush session")
+
+    def _check_idle_and_scan_loc(self):
+        """Check if user is idle and trigger LOC scanning periodically.
+        
+        LOC scanning is CPU-intensive, so only run when:
+        1. User is idle (no activity detected)
+        2. Enough time has passed since last scan (default 1 hour)
+        """
+        current_time = time.time()
+        
+        # Check if ready to scan based on interval
+        if current_time - self.last_loc_scan_time < self.loc_scan_interval_sec:
+            return
+        
+        # Check if user is currently idle
+        if not self.current_session:
+            return
+        
+        idle_metrics = self.current_session.idle_detector.get_idle_metrics()
+        idle_duration = idle_metrics.get('idle_duration_sec', 0)
+        session_duration = int((datetime.utcnow() - datetime.fromisoformat(self.current_session.start_time)).total_seconds())
+        
+        # Only scan if idle for at least configured ratio of the current session
+        if idle_duration > session_duration * float(self.loc_scan_idle_ratio_threshold):
+            try:
+                self.logger.info("[LOCScanner] User idle, starting background LOC scan...")
+                self.loc_scanner.scan_all_projects()
+                self.last_loc_scan_time = current_time
+                self.logger.info("[LOCScanner] Completed LOC scan")
+            except Exception as e:
+                self.logger.exception("[Error] LOC scanning failed")
 
     def _shutdown(self):
         """Graceful shutdown."""
-        print("[Agent] Shutting down...")
+        self.logger.info("[Agent] Shutting down...")
         
         # Stop background block evaluator
         self.block_evaluator.stop()
@@ -266,11 +485,14 @@ class DesktopAgent:
         # Flush final session
         if self.current_session:
             self._flush_session()
+
+        # Stop global listeners.
+        self.metrics.stop_listening()
         
         # Close database
         self.db.close()
-        print("[Agent] Database closed")
-        print("[Agent] Stopped")
+        self.logger.info("[Agent] Database closed")
+        self.logger.info("[Agent] Stopped")
 
 
 def main():

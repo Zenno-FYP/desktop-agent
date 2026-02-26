@@ -6,7 +6,7 @@
 sample_interval_sec: 2
 
 # Flush interval in seconds (how often to flush logs to database)
-flush_interval_sec: 300  # 5 minutes
+flush_interval_sec: 300  # configurable
 
 # Idle threshold in seconds (inactivity before marking as idle)
 # 10 sec: Captures genuine away-from-desk, ignores brief thinking pauses
@@ -15,16 +15,31 @@ idle_threshold_sec: 10
 # Behavioral metrics settings
 behavioral_metrics:
   click_debounce_ms: 50  # Ignore clicks < 50ms apart (auto-clicks)
+  max_typing_intensity_kpm: 200
+  max_mouse_click_rate_cpm: 200
 
-# Privacy mode: strict (no titles) or relaxed (hashed titles)
-privacy_mode: strict
+
 
 ## PHASE 2: Block Evaluation Settings
 
 # Block duration in seconds for context state evaluation
-block_duration_sec: 300  # 5 minutes
+# Used by: BlockEvaluator._run_loop() and evaluate_block()
+# Purpose: Aggregates all activity logs from a block window to predict context state
+# Flow:
+#   1. Wakes at wall-clock boundaries (e.g., 2:00, 2:05, 2:10)
+#   2. Queries all NULL-context logs from past block_duration_sec
+#   3. Aggregates metrics: KPM, CPM, scrolls, app switches, idle time
+#   4. Runs ML model (or heuristic fallback) to predict context state
+#   5. Retroactively tags all logs in block with prediction
+# Fallback: If config missing, defaults to 300 seconds
+block_duration_sec: 300
 
-# Heuristic rule thresholds
+# Heuristic rule thresholds for context detection
+# Used by: ContextDetector.detect_context() decision tree
+# Purpose: FALLBACK when ML model unavailable or low-confidence
+# Flow: Applied in priority order - first rule that matches wins
+# Typical accuracy: 75-92% depending on heuristic (see confidence scores)
+# Note: Only used if ml_enabled=false OR ml prediction confidence < ml_confidence_threshold
 heuristics:
   # FOCUSED: High typing + moderate clicks + few app switches
   focused_kpm_min: 40         # Minimum KPM for focused work
@@ -55,43 +70,262 @@ heuristics:
   distracted_immediate_kpm_max: 30
 
 # App Categorization Settings
+# Used by: ContextDetector (analyze/context_detector.py)
+# Purpose: Classify apps as productive, distraction, or neutral for context detection
+# In detail:
+#   - productivity_apps: Apps that indicate focused/research work (IDEs, browsers, terminals)
+#     Used in _classify_app() to distinguish RESEARCH (multiple productivity apps) from DISTRACTION
+#   - distraction_apps: Social media, entertainment, messaging apps
+#     Used in is_distraction_app() and BlockEvaluator/ContextDetector feature extraction
+#   - custom lists allow users to add/remove apps without modifying code
 app_categorization:
-  enabled: true              # Enable/disable app categorization
+  # Productivity apps (development tools, communication, browsers for research)
+  # Used to distinguish RESEARCH context (multiple productivity apps) from DISTRACTION
+  # Examples: VS Code, PyCharm, browsers, terminals, Slack, Teams (work comms)
+  productivity_apps:
+    - code
+    - code.exe
+    - pycharm
+    - pycharm.exe
+    - idea
+    - idea.exe
+    - sublime
+    - sublime.exe
+    - vim
+    - vi
+    - chrome
+    - chrome.exe
+    - msedge
+    - msedge.exe
+    - firefox
+    - firefox.exe
+    - terminal
+    - terminal.exe
+    - cmd
+    - cmd.exe
+    - powershell
+    - powershell.exe
+    - explorer
+    - explorer.exe
+    - visual studio
+    - devenv.exe
+    - git
+    - git.exe
+    - notepad
+    - notepad.exe
+    - github desktop
+    - gitkraken
+    - slack
+    - teams
+    - teams.exe
   
-  # Custom distraction apps (add to default list)
+  # Distraction apps (social media, entertainment, messaging)
+  # Used by: 
+  #   1. ContextDetector.is_distraction_app() - checks if app visit is distraction
+  #   2. BlockEvaluator - marks touched_distraction_app for context inference
+  # Behavior: Substring matching on lowercased app name (e.g., "discord" matches "discord.exe")
+  distraction_apps:
+    - discord
+    - discord.exe
+    - telegram
+    - telegram.exe
+    - whatsapp
+    - whatsapp.exe
+    - twitter
+    - x.exe
+    - instagram
+    - instagram.exe
+    - tiktok
+    - tiktok.exe
+    - youtube
+    - youtube.exe
+    - facebook
+    - facebook.exe
+    - reddit
+    - reddit.exe
+    - twitch
+    - twitch.exe
+    - spotify
+    - spotify.exe
+    - netflix
+    - netflix.exe
+    - hulu
+    - hulu.exe
+    - pinterest
+    - pinterest.exe
+    - snapchat
+    - snapchat.exe
+    - messenger
+  
+  # Custom distraction apps (additional apps to add to the list above)
   # Format: app names to monitor as distractions
-  custom_distraction_apps:
-    - gaming_app
-    - streaming_service
-    # Users can add their own apps here
+  custom_distraction_apps: []
   
   # Custom productivity apps (add to default list)
-  custom_productivity_apps:
-    - custom_ide
-    - internal_tool
-    # Users can add their own apps here
-  
-  # Apps to exclude from monitoring
-  exclude_apps:
-    - System
-    - explorer.exe
+  custom_productivity_apps: []
+
+
+# Project context detection (IDE titles + safe filesystem probing)
+# Used by: ProjectDetector class (monitor/project_detector.py)
+# Purpose: Extract active project name and file from IDE window context
+# Strategy (3-layer fallback):
+#   1. PID-based inspection: Read open files from IDE process, walk up to find project root markers
+#   2. Window title parsing: Extract project/file from VS Code, PyCharm title formats
+#   3. Safe directory search: Bounded filesystem search (time + depth limits) as last resort
+project_detector:
+  # Project root markers to look for when resolving paths
+  # Used by: ProjectDetector._get_project_path_from_pid()
+  # Purpose: When walking up from an open file, stop at first directory containing a marker
+  # Example: .git in /home/user/myproject/.git → myproject is the root
+  # Fallback: If config missing, returns empty list (no fallback defaults)
+  project_markers:
+    - .git
+    - package.json
+    - requirements.txt
+    - setup.py
+    - Makefile
+    - gradle.build
+    - pom.xml
+    - .project
+    - tsconfig.json
+    - next.config.js
+    - vite.config.js
+
+  # Safe base directories to probe (no full-disk scans)
+  # Used by: ProjectDetector.get_project_path() 
+  # Purpose: When title extraction succeeds but path doesn't exist, check these safe dirs
+  # Example: Title says "myproject", check ~/Projects/myproject before doing full drive search
+  # Performance: Checked before expensive filesystem scan (protects < 5% CPU constraint)
+  # Fallback: If config missing, returns empty list (no fallback defaults)
+  watch_dirs:
+    - "~/Documents"
+    - "~/Projects"
+    - "~/Development"
+    - "~/Code"
+    - "~/workspace"
+
+  # File extension → detected language mapping (used when capturing raw logs)
+  # Used by: ProjectDetector.get_detected_language()
+  # Purpose: Extract programming language from active file extension
+  # Example: main.py → "Python", app.ts → "TypeScript"
+  # Impact: Stored in raw_activity_logs.language for skill tracking, aggregation
+  # Fallback: If extension not found, returns None (no default language)
+  language_extensions:
+    .py: "Python"
+    .js: "JavaScript"
+    .ts: "TypeScript"
+    .jsx: "React"
+    .tsx: "React"
+    .java: "Java"
+    .cpp: "C++"
+    .c: "C"
+    .cs: "C#"
+    .go: "Go"
+    .rs: "Rust"
+    .rb: "Ruby"
+    .php: "PHP"
+    .swift: "Swift"
+    .kt: "Kotlin"
+    .html: "HTML"
+    .css: "CSS"
+    .sql: "SQL"
+    .json: "JSON"
+    .yaml: "YAML"
+    .yml: "YAML"
+    .xml: "XML"
+    .md: "Markdown"
+
+  # Strictly bounded drive search fallback (only used when needed)
+  # Used by: ProjectDetector._lightweight_drive_search()
+  # Purpose: Last resort fallback when title extraction + watch_dirs don't find project
+  # Safety: Hard limits (time + depth) prevent CPU/memory overload (< 5% CPU constraint)
+  # Flow: 
+  #   1. Extracts filename from window title
+  #   2. Iterates drives (skips C: unless necessary) with time/depth circuits
+  #   3. Stops at time_limit_sec even if search incomplete
+  #   4. Returns None if not found within limits (won't hang the agent)
+  # Fallback: If config missing, returns empty exclude_dirs, zero limits (search disabled)
+  lightweight_search:
+    # Directories to skip during search (lowercased comparison)
+    # Purpose: Avoid scanning expensive system dirs (slows down agent)
+    # Examples: node_modules (thousands of files), __pycache__ (Python cache), Windows (system)
+    exclude_dirs:
+      - windows
+      - program files
+      - program files (x86)
+      - programdata
+      - appdata
+      - $recycle.bin
+      - node_modules
+      - vendor
+      - temp
+      - tmp
+      - cache
+      - .git
+      - __pycache__
+      - system volume information
+      - users
+      - recovery
+      - system32
+      - syswow64
+    # Maximum directory depth to search (from drive root)
+    # Purpose: Prevents search from going too deep (very slow on deep nested structures)
+    # Example: max_depth=6 means C:\a\b\c\d\e\f (6 levels max from C:\)
+    # Trade-off: 6 levels finds most projects, but won't find deeply nested ones
+    # Fallback: If missing, defaults to 0 (search disabled)
+    max_depth: 6
+    # Maximum time in seconds for entire search across all drives
+    # Purpose: PRIMARY safety mechanism (hard circuit breaker)
+    # Checked every iteration: if elapsed > time_limit_sec, ABORT immediately
+    # Example: 1.0 sec = search won't block UI longer than 1 second
+    # Fallback: If missing, defaults to 0.0 (search disabled, returns None)
+    time_limit_sec: 1.0
+    # Whether to search C: (system drive) last or skip entirely
+    # Purpose: C: scan is expensive, often contains Windows/Program Files/huge temp dirs
+    # True: Check all user drives first, then C: only if needed (current behavior)
+    # False: Skip C: entirely (faster but might miss projects on system drive)
+    # Fallback: If missing, defaults to False (C: skipped)
+    search_system_drive_last: false
 
 ## PHASE 3: Machine Learning Settings
 
 # Enable/disable ML model-based predictions
+# Used by: BlockEvaluator._init_ml() and _predict_context()
+# True: Attempt to load XGBoost model, use ML predictions if available
+# False: Skip ML entirely, always use heuristic fallback
+# Fallback: If config missing, defaults to True (try ML)
 ml_enabled: true
 
 # Path to trained ML model (XGBoost classifier)
+# Used by: BlockEvaluator._init_ml() to load the model
+# Format: Relative to workspace root, expands ~ for home directory
+# Fallback: If config missing, returns None (ML disabled, no model loaded)
+# Note: Path must be correct - if file doesn't exist, falls back to heuristics
 ml_model_path: ./data/models/context_detector.pkl
 
 # Confidence threshold for ML predictions (0.0 - 1.0)
-# If ML confidence <= this threshold, fall back to heuristic rules
-# Default: 0.5 (50%) - use ML when confident enough, otherwise use rule-based detection
+# Used by: BlockEvaluator._predict_context()
+# Purpose: Control ML vs heuristic trade-off
+# Logic:
+#   IF ml_confidence >= ml_confidence_threshold: Use ML prediction (accurate)
+#   ELIF ml_confidence < threshold: Fallback to heuristic (safer)
+#   Value 0.5: Use ML when >= 50% confident, else heuristic
+#   Value 0.9: Use ML only when very confident, mostly use heuristic
+# Fallback: If config missing, defaults to 0.5 (50%)
 ml_confidence_threshold: 0.5
 
 ## PHASE 3B: Experience Sampling Method (ESM) Settings
 
 # ESM Popup configuration for ground-truth data collection
+# Used by: BlockEvaluator._init_esm_popup() and evaluate_block()
+# Purpose: Collect user verification when ML/heuristic confidence is low
+# Flow:
+#   1. BlockEvaluator tags block with prediction + confidence
+#   2. If confidence < esm_popup.confidence_threshold, queue popup
+#   3. ESMPopup shows user the prediction and 2 buttons (correct/incorrect)
+#   4. User's answer collected as ground truth for future model training
+# Note: Non-blocking (popup queued, doesn't block aggregation)
+# Fallback: If config missing/disabled, no popups shown (silent prediction)
 esm_popup:
   enabled: true              # Enable/disable ESM popup collection
   
@@ -126,16 +360,244 @@ esm_popup:
       subtext: "Arial 9"
       button: "Arial 9 bold"
 
+## PHASE 4: Aggregation Pipeline Settings
+
+# ETL Pipeline Settings (Maestro Orchestrator)
+# Used by: 
+#   - DesktopAgent (agent.py - COLLECTION PHASE): Applies sticky project logic when flushing sessions
+#   - ETL pipeline (aggregate/ module - AGGREGATION PHASE): Buckets events and runs aggregators
+# Purpose: Configure context aggregation behavior (timezone, project stickiness, app display names)
+# NOTE: SHIFT-LEFT IMPLEMENTATION
+#   - Sticky project logic moved to COLLECTION PHASE (agent.py)
+#   - When a browser/terminal session has no explicit project, it inherits last-detected project
+#   - This means raw_activity_logs table is CLEAN from the first second (no NULL projects)
+# Flow:
+#   1. Raw behavioral events collected with timestamps + app + window title
+#   2. [NEW] At collection: When flushing a generic app (browser) with no project:
+#      a. Check if sticky_project_name exists in memory
+#      b. Check if it's within TTL window (15 min)
+#      c. If yes: Assign detected project to this activity; if no: leave as NULL
+#   3. local_tz_offset_hours: Bucket events into daily sessions (midnight = session boundary)
+#   4. app_name_mapping: Normalize app display names (code.exe → "VS Code") for reports
+# Fallback: If config missing, defaults: tz_offset=0 (UTC), sticky_ttl=900s, no normalization
+etl_pipeline:
+  # Local timezone offset used for daily bucketing (midnight splitting)
+  # Example: +5.5 for IST, -5 for EST.
+  # Impact: Determines session split boundaries in daily reports
+  local_tz_offset_hours: 0
+
+  # Sticky project context TTL in seconds
+  # Used by: DesktopAgent._apply_sticky_project() during collection
+  # Purpose: Maintain project context across app switches (IDE → browser → IDE workflow)
+  # Implementation (Collection-Phase / Shift-Left):
+  #   When user switches to generic app (Chrome, Firefox, Terminal) with no project detected:
+  #   1. Check: Is there a sticky_project_name in memory?
+  #   2. Check: Was it seen less than TTL seconds ago?
+  #   3. Yes: Assign that project to browser activity → clean data in DB
+  #   4. No: Leave project NULL
+  # Multitasking Example:
+  #   00:00-05:00 VS Code (Project A): sticky = "Project A"
+  #   00:05-10:00 Chrome (no project): sticky is valid → DB saved as "Project A"
+  #   00:10-15:00 PyCharm (Project B): sticky = "Project B" (overwrites)
+  #   00:15-20:00 Chrome (no project): sticky is valid → DB saved as "Project B" (NOT A!)
+  # Agent Restart: On startup, DesktopAgent._recover_sticky_project() queries the DB
+  #   to find the last non-NULL project and seeds it into memory if within TTL.
+  # Benefit: Eliminates need for Maestro to guess project context (data is clean at source)
+  sticky_project_ttl_sec: 900  # 15 minutes = 900 seconds
+  
+  # App name normalization mapping (executable → friendly name)
+  # Used to clean up .exe filenames for display and aggregation
+  # Without this: Reports show "code.exe", "pycharm64.exe" (ugly, browser-unmappable)
+  # With this: Reports show "VS Code", "PyCharm" (readable, consistent)
+  app_name_mapping:
+    code.exe: "VS Code"
+    chrome.exe: "Google Chrome"
+    msedge.exe: "Microsoft Edge"
+    windowsterminal.exe: "Terminal"
+    pycharm64.exe: "PyCharm"
+    studio64.exe: "Android Studio"
+    postman.exe: "Postman"
+  
+  # Language to skill mapping (detected_language → skill category)
+  # Used by: Aggregate pipeline (skill category reporting and analysis)
+  # Purpose: Group programming languages into broader skill domains for portfolio/reporting
+  # Flow:
+  #   1. ProjectDetector identifies language from file extension (.py, .ts, .java, etc.)
+  #   2. LOC scanner counts lines of code per language
+  #   3. This mapping converts language → skill (Python, JavaScript → Backend, Frontend)
+  #   4. Aggregation reports show "Backend 1000 hr" vs granular "Python 500, Go 500"
+  # Impact: Skills become the reporting unit for dashboards (backend %, frontend %, etc.)
+  # Fallback: If config missing, no skill mapping (language-based reporting only)
+  language_to_skill_mapping:
+    Python: "Backend"
+    JavaScript: "Frontend"
+    TypeScript: "Frontend"
+    Java: "Backend"
+    "C++": "Systems"
+    "C#": "Backend"
+    Go: "Backend"
+    Rust: "Systems"
+    Ruby: "Backend"
+    PHP: "Backend"
+    Swift: "Mobile"
+    Kotlin: "Mobile"
+    SQL: "Data"
+    HTML: "Frontend"
+    CSS: "Frontend"
+    Unknown: "Other"
+
+# Lines of Code (LOC) Scanner Settings
+# Used by: LOCScanner class (aggregate/loc_scanner.py - code volume quantification)
+# Purpose: Identify programming languages and measure development output (lines written per session)
+# Flow:
+#   1. When context switches to IDE (VS Code, PyCharm), capture current project path
+#   2. Recursively scan project directory for source files
+#   3. Match file extensions against language_extensions mapping
+#   4. Count total lines per language and skip unwanted directories (node_modules, .git, etc.)
+#   5. Report: "Python 1200 LOC, JavaScript 800 LOC" for session
+# Impact: Quantifies productivity output (LOC is input to context state heuristics)
+# Safety: skip_directories prevents double-counting (node_modules duplicates source files) and scanning build artifacts
+# Fallback: If config missing, no language mapping (files unclassified), no directory skipping (slow scans)
+loc_scanner:
+  # How often to run background LOC scans (only when user idle)
+  # Used by: DesktopAgent._check_idle_and_scan_loc()
+  scan_interval_sec: 3600
+
+  # Idle ratio required to trigger a scan (idle_sec / session_duration_sec)
+  # Used by: DesktopAgent._check_idle_and_scan_loc()
+  idle_ratio_threshold: 0.3
+
+  # File extensions → language mapping (for code volume tracking)
+  language_extensions:
+    .py: "Python"
+    .js: "JavaScript"
+    .ts: "TypeScript"
+    .jsx: "JavaScript"
+    .tsx: "TypeScript"
+    .java: "Java"
+    .cpp: "C++"
+    .cc: "C++"
+    .cxx: "C++"
+    .c: "C"
+    .h: "C"
+    .hpp: "C++"
+    .cs: "C#"
+    .go: "Go"
+    .rs: "Rust"
+    .rb: "Ruby"
+    .php: "PHP"
+    .swift: "Swift"
+    .kt: "Kotlin"
+    .scala: "Scala"
+    .sh: "Bash"
+    .bash: "Bash"
+    .sql: "SQL"
+    .html: "HTML"
+    .htm: "HTML"
+    .css: "CSS"
+    .scss: "SCSS"
+    .sass: "SASS"
+    .less: "LESS"
+    .json: "JSON"
+    .yaml: "YAML"
+    .yml: "YAML"
+    .xml: "XML"
+    .md: "Markdown"
+    .rst: "ReStructuredText"
+    .tex: "LaTeX"
+    .r: "R"
+    .lua: "Lua"
+    .perl: "Perl"
+    .dart: "Dart"
+    .groovy: "Groovy"
+    .clojure: "Clojure"
+    .erl: "Erlang"
+    .exs: "Elixir"
+    .vim: "VimScript"
+    .m: "Objective-C"
+    .hx: "Haxe"
+  
+  # Directories to skip during code scanning (build/dependency folders)
+  # Purpose: Prevent LOC scanner from counting generated/downloaded code
+  # Rationale: 
+  #   - node_modules: 10,000+ files (inflates LOC, slows scan, not developer-written)
+  #   - __pycache__: Compiled bytecode (duplicates .py files, 20x inflation)
+  #   - .git: Version history (not actual development output)
+  #   - build/dist/target: Generated artifacts (compiler/build output, not source)
+  #   - venv/.venv: Virtual environments (auto-generated, external packages)
+  # Impact: 10-100x faster scans + accurate LOC counting (no artificial inflation)
+  # Fallback: If config missing, all directories scanned (very slow, inflated LOC counts)
+  skip_directories:
+    - .git
+    - .svn
+    - node_modules
+    - venv
+    - .venv
+    - __pycache__
+    - dist
+    - build
+    - target
+    - .gradle
+    - .idea
+    - .vscode
+    - .cargo
+    - vendor
+    - .mypy_cache
+    - .pytest_cache
+    - .tox
+    - .env
+    - ".egg-info"
+    - ".eggs"
+    - ".next"
+    - ".nuxt"
+    - ".vercel"
+    - site-packages
+    - ".flutter-plugins"
+    - cocoapods
+    - ".bundle"
+    - ".sass-cache"
+    - ".jekyll-cache"
+
 # Database Settings
+# Used by: MaestroETL, EventLogger, ContextAggregator (database/ module - persistent storage)
+# Purpose: Configure SQLite connection behavior (concurrency, performance, reliability)
+# Flow:
+#   1. Behavioral events + context snapshots written to SQLite (aggregation queries read same DB)
+#   2. check_same_thread=false: Allow background thread (ETL) to write while main thread reads (reports)
+#   3. journal_mode=WAL: Write-Ahead Logging maintains database integrity during concurrent access
+#   4. timeout: If one thread locks DB, other waits up to 10 seconds before giving up
+# Impact: 
+#   - Concurrent reads/writes without data corruption
+#   - Faster transaction commits (WAL mode optimized for SQLite)
+# Fallback: If config missing, defaults: path=./data/db/zenno.db, check_same_thread=False, timeout=10.0, journal_mode=WAL
 db:
   path: ./data/db/zenno.db
   # Thread safety settings
+  # Cross-thread access: Set to false when multiple threads access same DB (ETL write + report read)
+  # Set to true only if single-threaded application (safety constraint)
   check_same_thread: false   # Allow cross-thread SQLite access
-  timeout: 10.0              # Lock timeout in seconds
+  timeout: 10.0              # Lock timeout in seconds (how long readers/writers wait if DB locked)
   # Connection pool
+  # WAL = Write-Ahead Logging: Separates read lock from write lock (readers don't block writers)
+  # Alternative: TRUNCATE (slower for concurrent access), DELETE (slowest, full ACID)
   journal_mode: WAL          # Write-Ahead Logging for concurrent access
 
 ## Logging Settings
+# Used by: Python logging module (all modules - diagnose runtime behavior)
+# Purpose: Configure verbosity level, output file, and message format for debugging/monitoring
+# Levels (order of detail):
+#   DEBUG (10): Detailed function entry/exit, variable values, all decision points
+#   INFO (20): High-level flow events (process start, config loaded, session created)
+#   WARNING (30): Condition that should not happen but doesn't crash (missing config, fallback triggered)
+#   ERROR (40): Exceptions, failures, data loss (invalid file, DB corruption)
+# Flow:
+#   1. Each log message gets formatted with timestamp + logger name + level + message
+#   2. Written to both console (stderr) and file (./logs/agent.log)
+#   3. File rotated automatically when exceeding size limit (if handler configured)
+# Production recommendation: 
+#   - LOCAL: level=DEBUG (diagnose issues, understand behavior)
+#   - PRODUCTION: level=INFO (only important events, small log files)
+# Fallback: If config missing, defaults: level=WARNING, file=stderr only
 logging:
   level: INFO                # DEBUG, INFO, WARNING, ERROR
   file: ./logs/agent.log
