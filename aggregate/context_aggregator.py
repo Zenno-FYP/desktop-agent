@@ -28,9 +28,9 @@ class ContextAggregator:
         aggregates = defaultdict(int)
         
         for log in transformed_logs:
-            # Note: We include __unassigned__ in context tracking.
-            # This allows us to record "Distracted" sessions (from blacklist detection)
-            # and other unattributed time. Other aggregators skip __unassigned__.
+            # Skip __unassigned__ projects (they don't exist in projects table)
+            if log["project_name"] == "__unassigned__":
+                continue
             
             key = (log["date"], log["project_name"], log["context_state"])
             aggregates[key] += log["duration_sec"]

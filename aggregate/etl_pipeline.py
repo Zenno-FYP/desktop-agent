@@ -97,13 +97,13 @@ class ETLPipeline:
         
         Returns:
             List of tuples: (log_id, start_time, end_time, app_name, project_name, project_path,
-                           detected_language, context_state, duration_sec, typing_intensity,
+                           detected_language, context_state, manually_verified_label, duration_sec, typing_intensity,
                            mouse_click_rate, mouse_scroll_events, idle_duration_sec)
         """
         cursor = self.db.conn.execute(
             """
             SELECT log_id, start_time, end_time, app_name, project_name, project_path,
-                   detected_language, context_state, duration_sec, typing_intensity,
+                   detected_language, context_state, manually_verified_label, duration_sec, typing_intensity,
                    mouse_click_rate, mouse_scroll_events, idle_duration_sec
             FROM raw_activity_logs
             WHERE is_aggregated = 0
@@ -147,6 +147,7 @@ class ETLPipeline:
             project_path,
             detected_language,
             context_state,
+            manually_verified_label,
             duration_sec,
             typing_intensity,
             mouse_click_rate,
@@ -170,6 +171,11 @@ class ETLPipeline:
             # Handle language (default to "Unknown")
             language_name = detected_language or "Unknown"
 
+            # ==================== CONTEXT STATE PRIORITIZATION ====================
+            # Phase 3B: If user manually verified the context (ESM feedback), use that.
+            # Otherwise, fall back to ML-generated context_state (model prediction).
+            final_context = manually_verified_label if manually_verified_label else context_state
+
             # Clean the app name
             clean_app_name = app_mapping.get(app_name.lower(), app_name.replace(".exe", "").title())
 
@@ -190,7 +196,7 @@ class ETLPipeline:
                     "project_name": attributed_project,
                     "project_path": project_path,
                     "language_name": language_name,
-                    "context_state": context_state,
+                    "context_state": final_context,
                     "duration_sec": seg_duration,
                     "end_time_utc": seg_end_utc.strftime("%Y-%m-%d %H:%M:%S"),
                     "typing_intensity": typing_intensity,
@@ -237,6 +243,17 @@ class ETLPipeline:
         """
         try:
             with self.db.conn:
+                # Ensure __unassigned__ project exists before inserting aggregated data
+                # (needed for foreign key constraints in aggregation tables)
+                now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                self.db.conn.execute(
+                    """
+                    INSERT OR IGNORE INTO projects (project_name, project_path, first_seen_at, last_active_at, needs_sync)
+                    VALUES (?, NULL, ?, ?, 0)
+                    """,
+                    ("__unassigned__", now, now)
+                )
+                
                 # Execute all aggregator-generated SQL commands
                 for query, params in sql_commands:
                     self.db.conn.execute(query, params)

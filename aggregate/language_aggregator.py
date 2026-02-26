@@ -16,10 +16,15 @@ class LanguageAggregator:
     def generate_upserts(self, transformed_logs):
         """Generate UPSERT commands for language durations grouped by date/project/language.
         
+        FILTER: Only tracks ACTUAL CODING (where project_path is not NULL)
+        - IDE sessions with open files have project_path (e.g., "E:\Zenno\desktop-agent")
+        - Browser/generic apps have project_name (from sticky) but project_path = NULL
+        - This ensures we only count real development time, not browsing time
+        
         Args:
             transformed_logs: List of transformed log dicts from ETLPipeline.
-                            Keys: log_id, date, app_name, project_name, language_name,
-                                  context_state, duration_sec
+                            Keys: log_id, date, app_name, project_name, project_path,
+                                  language_name, context_state, duration_sec
         
         Returns:
             List of (query, params) tuples ready to execute in a transaction
@@ -28,8 +33,13 @@ class LanguageAggregator:
         aggregates = defaultdict(int)
         
         for log in transformed_logs:
-            # Skip __unassigned__ projects (they don't exist in projects table)
+            # Skip __unassigned__ projects (browser time with expired sticky)
             if log["project_name"] == "__unassigned__":
+                continue
+            
+            # Skip rows with NO project_path (browser, generic apps, etc.)
+            # Only count ACTUAL CODING sessions where files were opened
+            if not log["project_path"]:
                 continue
             
             key = (log["date"], log["project_name"], log["language_name"])
