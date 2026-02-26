@@ -11,20 +11,6 @@ import psutil
 class ProjectDetector:
     """Detect project name and active file from IDE context."""
 
-    # Project root markers to look for
-    PROJECT_MARKERS = ['.git', 'package.json', 'requirements.txt', 'setup.py', 
-                       'Makefile', 'gradle.build', 'pom.xml', '.project', 
-                       'tsconfig.json', 'next.config.js', 'vite.config.js']
-    
-    # Common project directories
-    WATCH_DIRS = [
-        Path.home() / 'Documents',
-        Path.home() / 'Projects',
-        Path.home() / 'Development',
-        Path.home() / 'Code',
-        Path.home() / 'workspace',
-    ]
-
     def __init__(self, config=None):
         """Initialize project detector.
 
@@ -41,17 +27,17 @@ class ProjectDetector:
         self.lightweight_search_cfg = self._get_lightweight_search_cfg()
 
     def _get_project_markers(self):
+        """Get project markers from config.yaml (required)."""
         if not self.config:
-            return list(self.PROJECT_MARKERS)
-        return self.config.get("project_detector.project_markers", list(self.PROJECT_MARKERS))
+            return []
+        return self.config.get("project_detector.project_markers", [])
 
     def _get_watch_dirs(self):
-        raw = None
-        if self.config:
-            raw = self.config.get("project_detector.watch_dirs")
-        if not raw:
-            return list(self.WATCH_DIRS)
-
+        """Get watch directories from config.yaml (required)."""
+        if not self.config:
+            return []
+        
+        raw = self.config.get("project_detector.watch_dirs", [])
         watch_dirs = []
         for path_str in raw:
             try:
@@ -61,63 +47,45 @@ class ProjectDetector:
         return watch_dirs
 
     def _get_language_extensions(self):
-        default = {
-            '.py': 'Python',
-            '.js': 'JavaScript',
-            '.ts': 'TypeScript',
-            '.jsx': 'React',
-            '.tsx': 'React',
-            '.java': 'Java',
-            '.cpp': 'C++',
-            '.c': 'C',
-            '.cs': 'C#',
-            '.go': 'Go',
-            '.rs': 'Rust',
-            '.rb': 'Ruby',
-            '.php': 'PHP',
-            '.swift': 'Swift',
-            '.kt': 'Kotlin',
-            '.html': 'HTML',
-            '.css': 'CSS',
-            '.sql': 'SQL',
-            '.json': 'JSON',
-            '.yaml': 'YAML',
-            '.yml': 'YAML',
-            '.xml': 'XML',
-            '.md': 'Markdown',
-        }
+        """Get language extensions from config.yaml.
+        
+        Language extension mappings should be configured in config.yaml 
+        under project_detector.language_extensions.
+        """
         if not self.config:
-            return default
-        return self.config.get("project_detector.language_extensions", default)
+            return {}
+        return self.config.get("project_detector.language_extensions", {})
 
     def _get_lightweight_search_cfg(self):
-        default = {
-            "exclude_dirs": {
-                'windows', 'program files', 'program files (x86)', 'programdata',
-                'appdata', '$recycle.bin', 'node_modules', 'vendor', 'temp', 'tmp',
-                'cache', '.git', '__pycache__', 'system volume information',
-                'users', 'recovery', 'system32', 'syswow64'
-            },
-            "max_depth": 6,
-            "time_limit_sec": 1.0,
-            "search_system_drive_last": True,
-        }
-
+        """Get lightweight search config from config.yaml (required).
+        
+        Settings should be configured in config.yaml under 
+        project_detector.lightweight_search with keys:
+        - exclude_dirs: list of directory names to skip
+        - max_depth: maximum directory depth to search
+        - time_limit_sec: maximum search time in seconds
+        - search_system_drive_last: whether to search C: drive last
+        """
         if not self.config:
-            return default
+            return {
+                "exclude_dirs": set(),
+                "max_depth": 0,
+                "time_limit_sec": 0.0,
+                "search_system_drive_last": False,
+            }
 
         cfg = self.config.get("project_detector.lightweight_search", {}) or {}
-        exclude_dirs = cfg.get("exclude_dirs")
+        exclude_dirs = cfg.get("exclude_dirs", [])
         if isinstance(exclude_dirs, list):
             exclude_dirs = {str(d).lower() for d in exclude_dirs}
         else:
-            exclude_dirs = default["exclude_dirs"]
+            exclude_dirs = set()
 
         return {
             "exclude_dirs": exclude_dirs,
-            "max_depth": int(cfg.get("max_depth", default["max_depth"])),
-            "time_limit_sec": float(cfg.get("time_limit_sec", default["time_limit_sec"])),
-            "search_system_drive_last": bool(cfg.get("search_system_drive_last", default["search_system_drive_last"])),
+            "max_depth": int(cfg.get("max_depth", 0)),
+            "time_limit_sec": float(cfg.get("time_limit_sec", 0.0)),
+            "search_system_drive_last": bool(cfg.get("search_system_drive_last", False)),
         }
 
     def _lightweight_drive_search(self, active_file_name: str, expected_project_name: str) -> Optional[str]:
@@ -213,11 +181,13 @@ class ProjectDetector:
                 # Walk up from this file to find project root (marked by .git, package.json, etc.)
                 current = Path(file_path).parent
                 
-                for _ in range(20):  # Check up to 20 levels up
+                for _ in range(100):  # Check up to 100 levels up (filesystem depth limit)
                     if current == current.parent:  # Reached filesystem root
                         break
                     
-                    # Check for project markers
+                    # Check for project markers from config
+                    if not self.project_markers:
+                        break
                     for marker in self.project_markers:
                         if (current / marker).exists():
                             return str(current)
@@ -232,9 +202,8 @@ class ProjectDetector:
             for arg in cmdline:
                 # Check if any argument is a valid directory path (not a flag)
                 if os.path.isdir(arg) and not arg.startswith("--"):
-                    # Skip common flags and system paths
-                    if arg not in ["--type=renderer", "--no-sandbox", "Code", "code"] and \
-                       "AppData" not in arg and "WINDOWS" not in arg:
+                    # Skip system paths
+                    if "AppData" not in arg and "WINDOWS" not in arg:
                         return arg
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass

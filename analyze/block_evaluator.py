@@ -21,27 +21,34 @@ class BlockEvaluator:
     7. Retroactively updates all logs in the block with context_state + confidence_score
     """
     
-    def __init__(self, db, context_detector, config=None, block_duration_sec: int = 300, use_ml: bool = True):
+    def __init__(self, db, context_detector, config=None, block_duration_sec: int = None, use_ml: bool = True):
         """Initialize the BlockEvaluator.
         
         Args:
             db: Database instance for querying and updating logs
             context_detector: ContextDetector instance for heuristic fallback
-            config: Config instance for reading ML settings (optional)
-            block_duration_sec: Duration of evaluation blocks in seconds (default: 300 = 5 min)
+            config: Config instance for reading settings (optional)
+            block_duration_sec: Duration of evaluation blocks in seconds. If None, reads from config.
+                               Falls back to default 300 seconds if not specified in config
             use_ml: Whether to use ML model (default: True). Falls back to heuristic if model unavailable
                     Overrides config['ml_enabled'] if explicitly set to False
         """
         self.db = db
         self.context_detector = context_detector
         self.config = config
-        self.block_duration_sec = block_duration_sec
+        
+        # Read block_duration_sec from config first, then parameter, then default to 300
+        if config:
+            self.block_duration_sec = config.get('block_duration_sec', block_duration_sec or 300)
+        else:
+            self.block_duration_sec = block_duration_sec or 300
+        
         self.thread = None
         self.running = False
         self.ml_predictor = None
         self.use_ml = use_ml
         self.ml_available = False
-        self.ml_confidence_threshold = 0.5  # Default threshold
+        self.ml_confidence_threshold = 0.5  # Default threshold (overridden by config below)
         self.esm_confidence_threshold = None  # Will be read from config
         self.esm_popup = None  # Phase 3B: ESM popup handler
         
@@ -84,18 +91,27 @@ class BlockEvaluator:
             self.esm_popup = None
     
     def _init_ml(self) -> None:
-        """Initialize ML model."""
+        """Initialize ML model from config.yaml path."""
         try:
             from ml.predictor import MLPredictor
             
-            # Determine model path from config or default
-            model_path_str = self.config.get("ml_model_path") if self.config else None
-            if model_path_str:
-                model_path = Path(model_path_str).expanduser()
-                if not model_path.is_absolute():
-                    model_path = model_path.resolve()
-            else:
-                model_path = Path(__file__).parent.parent / "data" / "models" / "context_detector.pkl"
+            # Read model path from config (required for this phase)
+            if not self.config:
+                print("[BlockEvaluator] No config provided, ML disabled")
+                self.ml_available = False
+                return
+            
+            model_path_str = self.config.get("ml_model_path")
+            if not model_path_str:
+                print("[BlockEvaluator] ml_model_path not configured in config.yaml, ML disabled")
+                self.ml_available = False
+                return
+            
+            # Resolve path: handle relative paths and expand ~
+            model_path = Path(model_path_str).expanduser()
+            if not model_path.is_absolute():
+                # Relative paths are relative to workspace root
+                model_path = Path(__file__).parent.parent / model_path_str
             
             if model_path.exists():
                 self.ml_predictor = MLPredictor(str(model_path))
