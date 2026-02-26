@@ -7,7 +7,14 @@ from datetime import datetime
 class Database:
     """SQLite connection and schema management."""
 
-    def __init__(self, db_path: str):
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        check_same_thread: bool = False,
+        timeout: float = 10.0,
+        journal_mode: str = "WAL",
+    ):
         """Initialize database connection.
         
         Args:
@@ -16,16 +23,29 @@ class Database:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = None
+        self.check_same_thread = bool(check_same_thread)
+        self.timeout = float(timeout)
+        self.journal_mode = journal_mode
+
+    @staticmethod
+    def _sanitize_journal_mode(journal_mode: str) -> str:
+        """Return a safe SQLite journal_mode value."""
+        if not journal_mode:
+            return "WAL"
+        candidate = str(journal_mode).strip().upper()
+        allowed = {"WAL", "DELETE", "TRUNCATE", "PERSIST", "MEMORY", "OFF"}
+        return candidate if candidate in allowed else "WAL"
 
     def connect(self):
         """Open connection and enable WAL mode."""
         self.conn = sqlite3.connect(
             str(self.db_path),
-            check_same_thread=False,  # Allow use in different threads (safe with WAL mode)
-            timeout=10.0  # Wait up to 10 seconds for locks
+            check_same_thread=self.check_same_thread,
+            timeout=self.timeout,
         )
-        # Enable WAL mode for better concurrency
-        self.conn.execute("PRAGMA journal_mode=WAL")
+
+        journal_mode = self._sanitize_journal_mode(self.journal_mode)
+        self.conn.execute(f"PRAGMA journal_mode={journal_mode}")
         # Enable foreign keys
         self.conn.execute("PRAGMA foreign_keys=ON")
         return self.conn
@@ -68,47 +88,140 @@ class Database:
                 
                 -- Phase 3B: ESM Verification (Ground-Truth User Feedback)
                 manually_verified_label TEXT NULL,    -- User's corrected answer (NULL = unverified)
-                verified_at TIMESTAMP NULL            -- When user verified this entry
+                verified_at TIMESTAMP NULL,           -- When user verified this entry
+                
+                -- Phase 4: Aggregation Tracking
+                is_aggregated INTEGER NOT NULL DEFAULT 0,      -- 0 = pending, 1 = processed
+                aggregated_at TEXT NULL,                       -- UTC ISO when aggregated
+                aggregation_version INTEGER NOT NULL DEFAULT 1  -- For future re-aggregation
             )
         """)
         self.conn.commit()
         
-        # Phase 3B Migration: Add verification columns if they don't exist
-        self._migrate_add_verification_columns()
-
-    def _migrate_add_verification_columns(self):
-        """Add verification columns for ESM popup if they don't exist (idempotent).
+        # Create indexes for Phase 4 aggregation queries (optimized for end_time)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_raw_agg_pending ON raw_activity_logs(is_aggregated, end_time)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_raw_end_time ON raw_activity_logs(end_time)"
+        )
+        self.conn.commit()
         
-        Phase 3B uses manually_verified_label (user's correction) and verified_at (when)
-        to track ground-truth feedback from ESM popups.
-        """
-        if not self.conn:
-            raise RuntimeError("Database not connected. Call connect() first.")
-        
-        try:
-            # Check if manually_verified_label column exists
-            cursor = self.conn.execute(
-                "PRAGMA table_info(raw_activity_logs)"
+        # Phase 4: Create projects table (Metadata Hub)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS projects (
+                project_name TEXT PRIMARY KEY,
+                project_path TEXT,                 -- local-only (never synced)
+                first_seen_at TEXT NOT NULL,       -- UTC ISO
+                last_active_at TEXT NOT NULL,      -- UTC ISO
+                needs_sync INTEGER NOT NULL DEFAULT 1
             )
-            columns = {row[1] for row in cursor.fetchall()}
-            
-            # Add verification columns if they don't exist
-            if 'manually_verified_label' not in columns:
-                self.conn.execute(
-                    "ALTER TABLE raw_activity_logs ADD COLUMN manually_verified_label TEXT NULL"
-                )
-            
-            if 'verified_at' not in columns:
-                self.conn.execute(
-                    "ALTER TABLE raw_activity_logs ADD COLUMN verified_at TIMESTAMP NULL"
-                )
-            
-            self.conn.commit()
-            
-        except sqlite3.OperationalError as e:
-            # Columns already exist or other schema issue
-            print(f"[DB Migration] {e} (columns may already exist)")
-            pass
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_projects_needs_sync ON projects(needs_sync)"
+        )
+        self.conn.commit()
+        
+        # Initialize special __unassigned__ project (for distracted/unattributed time tracking)
+        # This allows daily_project_context to record distracted sessions without violating FK constraints
+        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        self.conn.execute(
+            """
+            INSERT OR IGNORE INTO projects (project_name, project_path, first_seen_at, last_active_at, needs_sync)
+            VALUES (?, NULL, ?, ?, 0)
+            """,
+            ("__unassigned__", now, now)
+        )
+        self.conn.commit()
+        
+        # Phase 4: Create daily_project_languages table
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_project_languages (
+                date TEXT NOT NULL,
+                project_name TEXT NOT NULL,
+                language_name TEXT NOT NULL,
+                duration_sec INTEGER NOT NULL DEFAULT 0,
+                needs_sync INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (date, project_name, language_name),
+                FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dpl_needs_sync ON daily_project_languages(needs_sync)"
+        )
+        self.conn.commit()
+        
+        # Phase 4: Create daily_project_apps table
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_project_apps (
+                date TEXT NOT NULL,
+                project_name TEXT NOT NULL,
+                app_name TEXT NOT NULL,
+                duration_sec INTEGER NOT NULL DEFAULT 0,
+                needs_sync INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (date, project_name, app_name),
+                FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dpa_needs_sync ON daily_project_apps(needs_sync)"
+        )
+        self.conn.commit()
+        
+        # Phase 4: Create daily_project_skills table
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_project_skills (
+                date TEXT NOT NULL,
+                project_name TEXT NOT NULL,
+                skill_name TEXT NOT NULL,
+                duration_sec INTEGER NOT NULL DEFAULT 0,
+                needs_sync INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (date, project_name, skill_name),
+                FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dps_needs_sync ON daily_project_skills(needs_sync)"
+        )
+        self.conn.commit()
+        
+        # Phase 4: Create daily_project_context table
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_project_context (
+                date TEXT NOT NULL,
+                project_name TEXT NOT NULL,
+                context_state TEXT NOT NULL,
+                duration_sec INTEGER NOT NULL DEFAULT 0,
+                needs_sync INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (date, project_name, context_state),
+                FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dpc_needs_sync ON daily_project_context(needs_sync)"
+        )
+        self.conn.commit()
+
+        # Phase 4: Create daily_project_behavior table (Physical effort metrics)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_project_behavior (
+                date TEXT NOT NULL,
+                project_name TEXT NOT NULL,
+                total_keystrokes INTEGER NOT NULL DEFAULT 0,
+                total_mouse_clicks INTEGER NOT NULL DEFAULT 0,
+                total_scroll_events INTEGER NOT NULL DEFAULT 0,
+                total_idle_sec INTEGER NOT NULL DEFAULT 0,
+                needs_sync INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (date, project_name),
+                FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dpb_needs_sync ON daily_project_behavior(needs_sync)"
+        )
+        self.conn.commit()
+
+
 
     def start_session(self, app_name: str, window_title: str = "") -> int:
         """DEPRECATED: Use insert_activity_log instead."""
@@ -203,13 +316,15 @@ class Database:
         return True
     
     def query_logs(self, start_time: str, end_time: str, 
-                   where_context_is_null: bool = False) -> list:
+                   where_context_is_null: bool = False, query_by_end_time: bool = True) -> list:
         """Query activity logs within a time range.
         
         Args:
             start_time: ISO format start time (e.g., "2026-02-24T14:05:00")
             end_time: ISO format end time
             where_context_is_null: If True, only return logs with context_state IS NULL
+            query_by_end_time: If True (default), query using end_time (catches long sessions).
+                              If False, query using start_time (legacy behavior).
         
         Returns:
             List of log dictionaries from the query
@@ -217,10 +332,20 @@ class Database:
         if not self.conn:
             raise RuntimeError("Database not connected. Call connect() first.")
         
-        query = """
-            SELECT * FROM raw_activity_logs 
-            WHERE start_time >= ? AND start_time < ?
-        """
+        # Phase 2 Hardening: Query by end_time to catch sessions that start before the block
+        # but end within it (prevents "never-tagged" long sessions)
+        if query_by_end_time:
+            query = """
+                SELECT * FROM raw_activity_logs 
+                WHERE end_time >= ? AND end_time < ?
+            """
+        else:
+            # Legacy: query by start_time
+            query = """
+                SELECT * FROM raw_activity_logs 
+                WHERE start_time >= ? AND start_time < ?
+            """
+        
         params = [start_time, end_time]
         
         if where_context_is_null:
@@ -369,3 +494,654 @@ class Database:
             })
         
         return result
+
+    def upsert_project(self, project_name, project_path):
+        """Insert new project or update last_active_at if exists.
+        
+        Args:
+            project_name: Unique project identifier (PRIMARY KEY)
+            project_path: Local filesystem path to project
+        """
+        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        
+        with self.conn:
+            self.conn.execute('''
+                INSERT INTO projects (project_name, project_path, first_seen_at, last_active_at, needs_sync)
+                VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT(project_name) DO UPDATE SET
+                    last_active_at = ?,
+                    needs_sync = 1
+            ''', (project_name, project_path, now, now, now))
+
+    def update_project_last_active(self, project_name, timestamp=None):
+        """Update last_active_at for a project.
+        
+        Args:
+            project_name: Project identifier
+            timestamp: UTC ISO string (default: now)
+        """
+        ts = timestamp or datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        
+        with self.conn:
+            self.conn.execute('''
+                UPDATE projects
+                SET last_active_at = ?, needs_sync = 1
+                WHERE project_name = ?
+            ''', (ts, project_name))
+
+    def get_project(self, project_name):
+        """Get single project by name.
+        
+        Args:
+            project_name: Project identifier
+            
+        Returns:
+            Dict with keys: project_name, project_path, first_seen_at, last_active_at, needs_sync
+            or None if not found
+        """
+        cursor = self.conn.execute('''
+            SELECT project_name, project_path, first_seen_at, last_active_at, needs_sync
+            FROM projects
+            WHERE project_name = ?
+        ''', (project_name,))
+        
+        row = cursor.fetchone()
+        if not row:
+            return None
+        
+        return {
+            'project_name': row[0],
+            'project_path': row[1],
+            'first_seen_at': row[2],
+            'last_active_at': row[3],
+            'needs_sync': row[4],
+        }
+
+    def get_all_projects(self, needs_sync=None):
+        """Get all projects, optionally filtered by sync status.
+        
+        Args:
+            needs_sync: If True, return only projects needing sync.
+                       If False, return only synced projects.
+                       If None (default), return all projects.
+            
+        Returns:
+            List of project dicts with keys: project_name, project_path, first_seen_at, last_active_at, needs_sync
+        """
+        if needs_sync is None:
+            cursor = self.conn.execute('''
+                SELECT project_name, project_path, first_seen_at, last_active_at, needs_sync
+                FROM projects
+                ORDER BY last_active_at DESC
+            ''')
+        else:
+            cursor = self.conn.execute('''
+                SELECT project_name, project_path, first_seen_at, last_active_at, needs_sync
+                FROM projects
+                WHERE needs_sync = ?
+                ORDER BY last_active_at DESC
+            ''', (1 if needs_sync else 0,))
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'project_name': row[0],
+                'project_path': row[1],
+                'first_seen_at': row[2],
+                'last_active_at': row[3],
+                'needs_sync': row[4],
+            })
+        
+        return result
+
+    # ==================== DAILY PROJECT LANGUAGES ====================
+
+    def get_daily_languages_by_date(self, date, needs_sync=None):
+        """Get all languages for a given date, optionally filtered by sync status.
+        
+        Args:
+            date: YYYY-MM-DD (local date)
+            needs_sync: If True/False, filter by sync status. If None, return all.
+            
+        Returns:
+            List of dicts with keys: date, project_name, language_name, duration_sec, needs_sync
+        """
+        if needs_sync is None:
+            cursor = self.conn.execute('''
+                SELECT date, project_name, language_name, duration_sec, needs_sync
+                FROM daily_project_languages
+                WHERE date = ?
+                ORDER BY project_name, language_name
+            ''', (date,))
+        else:
+            cursor = self.conn.execute('''
+                SELECT date, project_name, language_name, duration_sec, needs_sync
+                FROM daily_project_languages
+                WHERE date = ? AND needs_sync = ?
+                ORDER BY project_name, language_name
+            ''', (date, 1 if needs_sync else 0))
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'date': row[0],
+                'project_name': row[1],
+                'language_name': row[2],
+                'duration_sec': row[3],
+                'needs_sync': row[4],
+            })
+        return result
+
+    def get_daily_languages_pending_sync(self):
+        """Get all language rows pending cloud sync (needs_sync = 1).
+        
+        Returns:
+            List of dicts with keys: date, project_name, language_name, duration_sec, needs_sync
+        """
+        cursor = self.conn.execute('''
+            SELECT date, project_name, language_name, duration_sec, needs_sync
+            FROM daily_project_languages
+            WHERE needs_sync = 1
+            ORDER BY date DESC, project_name, language_name
+        ''')
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'date': row[0],
+                'project_name': row[1],
+                'language_name': row[2],
+                'duration_sec': row[3],
+                'needs_sync': row[4],
+            })
+        return result
+
+    def mark_daily_languages_synced(self, date, project_name=None):
+        """Mark language rows as synced (needs_sync = 0).
+        
+        Args:
+            date: YYYY-MM-DD (local date) to mark synced
+            project_name: Optional project filter. If None, marks all rows for that date.
+        """
+        if project_name is None:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE daily_project_languages
+                    SET needs_sync = 0
+                    WHERE date = ?
+                ''', (date,))
+        else:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE daily_project_languages
+                    SET needs_sync = 0
+                    WHERE date = ? AND project_name = ?
+                ''', (date, project_name))
+
+    # ==================== DAILY PROJECT APPS ====================
+
+    def get_daily_apps_by_date(self, date, needs_sync=None):
+        """Get all apps for a given date, optionally filtered by sync status.
+        
+        Args:
+            date: YYYY-MM-DD (local date)
+            needs_sync: If True/False, filter by sync status. If None, return all.
+            
+        Returns:
+            List of dicts with keys: date, project_name, app_name, duration_sec, needs_sync
+        """
+        if needs_sync is None:
+            cursor = self.conn.execute('''
+                SELECT date, project_name, app_name, duration_sec, needs_sync
+                FROM daily_project_apps
+                WHERE date = ?
+                ORDER BY project_name, app_name
+            ''', (date,))
+        else:
+            cursor = self.conn.execute('''
+                SELECT date, project_name, app_name, duration_sec, needs_sync
+                FROM daily_project_apps
+                WHERE date = ? AND needs_sync = ?
+                ORDER BY project_name, app_name
+            ''', (date, 1 if needs_sync else 0))
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'date': row[0],
+                'project_name': row[1],
+                'app_name': row[2],
+                'duration_sec': row[3],
+                'needs_sync': row[4],
+            })
+        return result
+
+    def get_daily_apps_pending_sync(self):
+        """Get all app rows pending cloud sync (needs_sync = 1).
+        
+        Returns:
+            List of dicts with keys: date, project_name, app_name, duration_sec, needs_sync
+        """
+        cursor = self.conn.execute('''
+            SELECT date, project_name, app_name, duration_sec, needs_sync
+            FROM daily_project_apps
+            WHERE needs_sync = 1
+            ORDER BY date DESC, project_name, app_name
+        ''')
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'date': row[0],
+                'project_name': row[1],
+                'app_name': row[2],
+                'duration_sec': row[3],
+                'needs_sync': row[4],
+            })
+        return result
+
+    def mark_daily_apps_synced(self, date, project_name=None):
+        """Mark app rows as synced (needs_sync = 0).
+        
+        Args:
+            date: YYYY-MM-DD (local date) to mark synced
+            project_name: Optional project filter. If None, marks all rows for that date.
+        """
+        if project_name is None:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE daily_project_apps
+                    SET needs_sync = 0
+                    WHERE date = ?
+                ''', (date,))
+        else:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE daily_project_apps
+                    SET needs_sync = 0
+                    WHERE date = ? AND project_name = ?
+                ''', (date, project_name))
+
+    # ==================== DAILY PROJECT SKILLS ====================
+
+    def get_daily_skills_by_date(self, date, needs_sync=None):
+        """Get all skills for a given date, optionally filtered by sync status.
+        
+        Args:
+            date: YYYY-MM-DD (local date)
+            needs_sync: If True/False, filter by sync status. If None, return all.
+            
+        Returns:
+            List of dicts with keys: date, project_name, skill_name, duration_sec, needs_sync
+        """
+        if needs_sync is None:
+            cursor = self.conn.execute('''
+                SELECT date, project_name, skill_name, duration_sec, needs_sync
+                FROM daily_project_skills
+                WHERE date = ?
+                ORDER BY project_name, skill_name
+            ''', (date,))
+        else:
+            cursor = self.conn.execute('''
+                SELECT date, project_name, skill_name, duration_sec, needs_sync
+                FROM daily_project_skills
+                WHERE date = ? AND needs_sync = ?
+                ORDER BY project_name, skill_name
+            ''', (date, 1 if needs_sync else 0))
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'date': row[0],
+                'project_name': row[1],
+                'skill_name': row[2],
+                'duration_sec': row[3],
+                'needs_sync': row[4],
+            })
+        return result
+
+    def get_daily_skills_pending_sync(self):
+        """Get all skill rows pending cloud sync (needs_sync = 1).
+        
+        Returns:
+            List of dicts with keys: date, project_name, skill_name, duration_sec, needs_sync
+        """
+        cursor = self.conn.execute('''
+            SELECT date, project_name, skill_name, duration_sec, needs_sync
+            FROM daily_project_skills
+            WHERE needs_sync = 1
+            ORDER BY date DESC, project_name, skill_name
+        ''')
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'date': row[0],
+                'project_name': row[1],
+                'skill_name': row[2],
+                'duration_sec': row[3],
+                'needs_sync': row[4],
+            })
+        return result
+
+    def mark_daily_skills_synced(self, date, project_name=None):
+        """Mark skill rows as synced (needs_sync = 0).
+        
+        Args:
+            date: YYYY-MM-DD (local date) to mark synced
+            project_name: Optional project filter. If None, marks all rows for that date.
+        """
+        if project_name is None:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE daily_project_skills
+                    SET needs_sync = 0
+                    WHERE date = ?
+                ''', (date,))
+        else:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE daily_project_skills
+                    SET needs_sync = 0
+                    WHERE date = ? AND project_name = ?
+                ''', (date, project_name))
+
+    # ==================== DAILY PROJECT CONTEXT ====================
+
+    def get_daily_context_by_date(self, date, needs_sync=None):
+        """Get all context states for a given date, optionally filtered by sync status.
+        
+        Args:
+            date: YYYY-MM-DD (local date)
+            needs_sync: If True/False, filter by sync status. If None, return all.
+            
+        Returns:
+            List of dicts with keys: date, project_name, context_state, duration_sec, needs_sync
+        """
+        if needs_sync is None:
+            cursor = self.conn.execute('''
+                SELECT date, project_name, context_state, duration_sec, needs_sync
+                FROM daily_project_context
+                WHERE date = ?
+                ORDER BY project_name, context_state
+            ''', (date,))
+        else:
+            cursor = self.conn.execute('''
+                SELECT date, project_name, context_state, duration_sec, needs_sync
+                FROM daily_project_context
+                WHERE date = ? AND needs_sync = ?
+                ORDER BY project_name, context_state
+            ''', (date, 1 if needs_sync else 0))
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'date': row[0],
+                'project_name': row[1],
+                'context_state': row[2],
+                'duration_sec': row[3],
+                'needs_sync': row[4],
+            })
+        return result
+
+    def get_daily_context_pending_sync(self):
+        """Get all context rows pending cloud sync (needs_sync = 1).
+        
+        Returns:
+            List of dicts with keys: date, project_name, context_state, duration_sec, needs_sync
+        """
+        cursor = self.conn.execute('''
+            SELECT date, project_name, context_state, duration_sec, needs_sync
+            FROM daily_project_context
+            WHERE needs_sync = 1
+            ORDER BY date DESC, project_name, context_state
+        ''')
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'date': row[0],
+                'project_name': row[1],
+                'context_state': row[2],
+                'duration_sec': row[3],
+                'needs_sync': row[4],
+            })
+        return result
+
+    def mark_daily_context_synced(self, date, project_name=None):
+        """Mark context rows as synced (needs_sync = 0).
+        
+        Args:
+            date: YYYY-MM-DD (local date) to mark synced
+            project_name: Optional project filter. If None, marks all rows for that date.
+        """
+        if project_name is None:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE daily_project_context
+                    SET needs_sync = 0
+                    WHERE date = ?
+                ''', (date,))
+        else:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE daily_project_context
+                    SET needs_sync = 0
+                    WHERE date = ? AND project_name = ?
+                ''', (date, project_name))
+
+    # ==================== DAILY PROJECT BEHAVIOR ====================
+
+    def get_daily_behavior_by_date(self, date, needs_sync=None):
+        """Get all behavior metrics for a given date, optionally filtered by sync status.
+        
+        Args:
+            date: YYYY-MM-DD (local date)
+            needs_sync: If True/False, filter by sync status. If None, return all.
+            
+        Returns:
+            List of dicts with keys: date, project_name, total_keystrokes, total_mouse_clicks,
+                                     total_scroll_events, total_idle_sec, needs_sync
+        """
+        if needs_sync is None:
+            cursor = self.conn.execute('''
+                SELECT date, project_name, total_keystrokes, total_mouse_clicks, 
+                       total_scroll_events, total_idle_sec, needs_sync
+                FROM daily_project_behavior
+                WHERE date = ?
+                ORDER BY project_name
+            ''', (date,))
+        else:
+            cursor = self.conn.execute('''
+                SELECT date, project_name, total_keystrokes, total_mouse_clicks, 
+                       total_scroll_events, total_idle_sec, needs_sync
+                FROM daily_project_behavior
+                WHERE date = ? AND needs_sync = ?
+                ORDER BY project_name
+            ''', (date, 1 if needs_sync else 0))
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'date': row[0],
+                'project_name': row[1],
+                'total_keystrokes': row[2],
+                'total_mouse_clicks': row[3],
+                'total_scroll_events': row[4],
+                'total_idle_sec': row[5],
+                'needs_sync': row[6],
+            })
+        return result
+
+    def get_daily_behavior_pending_sync(self):
+        """Get all behavior rows pending cloud sync (needs_sync = 1).
+        
+        Returns:
+            List of dicts with keys: date, project_name, total_keystrokes, total_mouse_clicks,
+                                     total_scroll_events, total_idle_sec, needs_sync
+        """
+        cursor = self.conn.execute('''
+            SELECT date, project_name, total_keystrokes, total_mouse_clicks, 
+                   total_scroll_events, total_idle_sec, needs_sync
+            FROM daily_project_behavior
+            WHERE needs_sync = 1
+            ORDER BY date DESC, project_name
+        ''')
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'date': row[0],
+                'project_name': row[1],
+                'total_keystrokes': row[2],
+                'total_mouse_clicks': row[3],
+                'total_scroll_events': row[4],
+                'total_idle_sec': row[5],
+                'needs_sync': row[6],
+            })
+        return result
+
+    def mark_daily_behavior_synced(self, date, project_name=None):
+        """Mark behavior rows as synced (needs_sync = 0).
+        
+        Args:
+            date: YYYY-MM-DD (local date) to mark synced
+            project_name: Optional project filter. If None, marks all rows for that date.
+        """
+        if project_name is None:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE daily_project_behavior
+                    SET needs_sync = 0
+                    WHERE date = ?
+                ''', (date,))
+        else:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE daily_project_behavior
+                    SET needs_sync = 0
+                    WHERE date = ? AND project_name = ?
+                ''', (date, project_name))
+
+    # ==================== PROJECT LOC SNAPSHOTS ====================
+
+    def get_project_loc(self, project_name, language_name=None):
+        """Get LOC snapshot(s) for a project.
+        
+        Args:
+            project_name: Project identifier
+            language_name: Optional language filter. If None, return all languages for project.
+            
+        Returns:
+            If language_name specified: dict with keys project_name, language_name, lines_of_code, last_scanned_at, needs_sync
+            If language_name is None: list of such dicts
+        """
+        if language_name is None:
+            # Get all languages for project
+            cursor = self.conn.execute('''
+                SELECT project_name, language_name, lines_of_code, last_scanned_at, needs_sync
+                FROM project_loc_snapshots
+                WHERE project_name = ?
+                ORDER BY language_name
+            ''', (project_name,))
+            
+            result = []
+            for row in cursor.fetchall():
+                result.append({
+                    'project_name': row[0],
+                    'language_name': row[1],
+                    'lines_of_code': row[2],
+                    'last_scanned_at': row[3],
+                    'needs_sync': row[4],
+                })
+            return result
+        else:
+            # Get specific language
+            cursor = self.conn.execute('''
+                SELECT project_name, language_name, lines_of_code, last_scanned_at, needs_sync
+                FROM project_loc_snapshots
+                WHERE project_name = ? AND language_name = ?
+            ''', (project_name, language_name))
+            
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            return {
+                'project_name': row[0],
+                'language_name': row[1],
+                'lines_of_code': row[2],
+                'last_scanned_at': row[3],
+                'needs_sync': row[4],
+            }
+
+    def get_all_loc_snapshots(self):
+        """Get all LOC snapshots across all projects and languages.
+        
+        Useful for dashboard or bulk operations.
+        
+        Returns:
+            List of dicts with keys: project_name, language_name, lines_of_code, last_scanned_at, needs_sync
+        """
+        cursor = self.conn.execute('''
+            SELECT project_name, language_name, lines_of_code, last_scanned_at, needs_sync
+            FROM project_loc_snapshots
+            ORDER BY project_name, language_name
+        ''')
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'project_name': row[0],
+                'language_name': row[1],
+                'lines_of_code': row[2],
+                'last_scanned_at': row[3],
+                'needs_sync': row[4],
+            })
+        return result
+
+    def get_loc_snapshots_pending_sync(self):
+        """Get all LOC snapshots pending cloud sync (needs_sync = 1).
+        
+        Returns:
+            List of dicts with keys: project_name, language_name, lines_of_code, last_scanned_at, needs_sync
+        """
+        cursor = self.conn.execute('''
+            SELECT project_name, language_name, lines_of_code, last_scanned_at, needs_sync
+            FROM project_loc_snapshots
+            WHERE needs_sync = 1
+            ORDER BY project_name, language_name
+        ''')
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'project_name': row[0],
+                'language_name': row[1],
+                'lines_of_code': row[2],
+                'last_scanned_at': row[3],
+                'needs_sync': row[4],
+            })
+        return result
+
+    def mark_loc_synced(self, project_name, language_name=None):
+        """Mark LOC snapshot(s) as synced (needs_sync = 0).
+        
+        Args:
+            project_name: Project identifier
+            language_name: Optional language filter. If None, marks all languages for project.
+        """
+        if language_name is None:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE project_loc_snapshots
+                    SET needs_sync = 0
+                    WHERE project_name = ?
+                ''', (project_name,))
+        else:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE project_loc_snapshots
+                    SET needs_sync = 0
+                    WHERE project_name = ? AND language_name = ?
+                ''', (project_name, language_name))

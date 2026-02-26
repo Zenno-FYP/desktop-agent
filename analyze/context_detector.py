@@ -1,11 +1,14 @@
 """Detect context state (Focused, Reading, Distracted, Idle) from behavioral metrics."""
-import sys
-from pathlib import Path
 from typing import Tuple
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config.config import Config
+try:
+    from config.config import Config
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from config.config import Config
 
 
 class ContextDetector:
@@ -16,54 +19,16 @@ class ContextDetector:
     - True Distraction: Touching social media, messaging, entertainment apps
     - Focus: Deep work with minimal interruptions
     - Idle: No activity or thinking
+    
+    App lists are loaded from config.yaml (app_categorization.productivity_apps
+    and app_categorization.distraction_apps) to allow user customization.
     """
-    
-    # App categorization for smarter context detection
-    PRODUCTIVITY_APPS = {
-        'code', 'code.exe',           # VS Code
-        'pycharm', 'pycharm.exe',     # PyCharm
-        'idea', 'idea.exe',           # IntelliJ IDEA
-        'sublime', 'sublime.exe',     # Sublime Text
-        'vim', 'vi',                  # Vim
-        'chrome', 'chrome.exe',       # Chrome (docs, research)
-        'msedge', 'msedge.exe',       # Edge
-        'firefox', 'firefox.exe',     # Firefox
-        'terminal', 'terminal.exe',   # Terminal
-        'cmd', 'cmd.exe',             # Windows Command Prompt
-        'powershell', 'powershell.exe', # PowerShell
-        'explorer', 'explorer.exe',   # File Explorer (code/artifact browsing)
-        'visual studio', 'devenv.exe', # Visual Studio
-        'git', 'git.exe',             # Git CLI
-        'notepad', 'notepad.exe',     # Notepad
-        'github desktop', 'gitkraken', # Git GUIs
-        'slack',                      # Slack (work communication)
-        'teams', 'teams.exe',         # Microsoft Teams (work communication)
-    }
-    
-    DISTRACTION_APPS = {
-        'discord', 'discord.exe',     # Discord personal
-        'telegram', 'telegram.exe',   # Telegram
-        'whatsapp', 'whatsapp.exe',   # WhatsApp
-        'twitter', 'x.exe',           # Twitter/X
-        'instagram', 'instagram.exe', # Instagram
-        'tiktok', 'tiktok.exe',       # TikTok
-        'youtube', 'youtube.exe',     # YouTube (unless research tab)
-        'facebook', 'facebook.exe',   # Facebook
-        'reddit', 'reddit.exe',       # Reddit
-        'twitch', 'twitch.exe',       # Twitch
-        'spotify', 'spotify.exe',     # Spotify (music distraction)
-        'netflix', 'netflix.exe',     # Netflix
-        'hulu', 'hulu.exe',           # Hulu
-        'pinterest', 'pinterest.exe', # Pinterest
-        'snapchat', 'snapchat.exe',   # Snapchat
-        'messenger',                  # Facebook Messenger
-    }
     
     def __init__(self, config: Config = None):
         """Initialize context detector.
         
         Args:
-            config: Config instance for reading heuristic thresholds (optional).
+            config: Config instance for reading heuristic thresholds and app lists (optional).
                    If not provided, defaults will be used.
         """
         self.config = config or Config()
@@ -93,6 +58,19 @@ class ContextDetector:
         self.distracted_confidence = heuristics.get('distracted_confidence', 0.75)
         self.distracted_immediate_confidence = heuristics.get('distracted_immediate_confidence', 0.85)
         self.distracted_immediate_kpm_max = heuristics.get('distracted_immediate_kpm_max', 30)
+        
+        # Load app categorization from config (with user customization support)
+        app_config = self.config.get('app_categorization', {})
+        
+        # Productivity apps: from config + custom additions
+        productivity_apps = app_config.get('productivity_apps', [])
+        custom_productivity = app_config.get('custom_productivity_apps', [])
+        self.productivity_apps = set(productivity_apps) | set(custom_productivity)
+        
+        # Distraction apps: from config + custom additions
+        distraction_apps = app_config.get('distraction_apps', [])
+        custom_distraction = app_config.get('custom_distraction_apps', [])
+        self.distraction_apps = set(distraction_apps) | set(custom_distraction)
     
     def _classify_app(self, app_name: str) -> str:
         """Classify an app as productive, distraction, or neutral.
@@ -106,11 +84,11 @@ class ContextDetector:
         app_name_lower = app_name.lower() if app_name else ""
         
         # Check distraction apps first (high priority)
-        if any(dist_app in app_name_lower for dist_app in self.DISTRACTION_APPS):
+        if any(dist_app in app_name_lower for dist_app in self.distraction_apps):
             return "distraction"
         
         # Check productivity apps
-        if any(prod_app in app_name_lower for prod_app in self.PRODUCTIVITY_APPS):
+        if any(prod_app in app_name_lower for prod_app in self.productivity_apps):
             return "productive"
         
         return "neutral"
@@ -130,7 +108,7 @@ class ContextDetector:
         if not app_name:
             return False
         app_name_lower = app_name.lower()
-        return any(dist_app in app_name_lower for dist_app in self.DISTRACTION_APPS)
+        return any(dist_app in app_name_lower for dist_app in self.distraction_apps)
     
     def detect_context(self, block_metrics: dict) -> Tuple[str, float]:
         """Evaluate developer's mental state for a 5-minute block.
