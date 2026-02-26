@@ -2,6 +2,8 @@
 Zenno Desktop Agent - Entry Point (Phase 1: Core Activity Detection)
 """
 import time
+import logging
+from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
@@ -137,8 +139,9 @@ class DesktopAgent:
             config_path: Optional path to config file
         """
         self.config = Config(config_path) if config_path else Config()
+        self._setup_logging()
         self.sample_interval = self.config.get("sample_interval_sec", 2)
-        self.flush_interval = self.config.get("flush_interval_sec", 300)  # 5 min default
+        self.flush_interval = self.config.get("flush_interval_sec", 300)
         self.idle_threshold_sec = self.config.get("idle_threshold_sec", 10)
         self.click_debounce_ms = self.config.get("behavioral_metrics.click_debounce_ms", 50)
         self.db_path = self.config.get("db.path", "./agent.db")
@@ -152,12 +155,13 @@ class DesktopAgent:
             check_same_thread=db_check_same_thread,
             timeout=db_timeout,
             journal_mode=db_journal_mode,
+            config=self.config,
         )
         self.db.connect()
         self.db.create_tables()
         print(f"[Agent] Database initialized: {self.db_path}")
         
-        # Initialize Phase 2: Context detection via 5-minute block evaluator
+        # Initialize Phase 2: Context detection via block evaluator
         self.context_detector = ContextDetector(self.config)
         block_duration_sec = self.config.get("block_duration_sec", 300)
         self.block_evaluator = BlockEvaluator(self.db, self.context_detector, config=self.config, block_duration_sec=block_duration_sec)
@@ -165,7 +169,8 @@ class DesktopAgent:
         
         # Initialize Phase 4: LOC Scanner (triggered on idle time)
         self.loc_scanner = LOCScanner(self.db, config=self.config)
-        self.loc_scan_interval_sec = self.config.get("loc_scan_interval_sec", 3600)  # 1 hour default
+        self.loc_scan_interval_sec = self.config.get("loc_scanner.scan_interval_sec", 3600)  # 1 hour default
+        self.loc_scan_idle_ratio_threshold = self.config.get("loc_scanner.idle_ratio_threshold", 0.3)
         self.last_loc_scan_time = 0
         
         # Session tracking
@@ -182,7 +187,26 @@ class DesktopAgent:
         self._recover_sticky_project()
         
         self.last_flush_time = time.time()
-        self.last_idle_scan_check = 0  # Track when we last checked for idle LOC scanning
+
+    def _setup_logging(self):
+        """Initialize Python logging from config.yaml (if present)."""
+        cfg = self.config.get("logging", {}) or {}
+        level_name = str(cfg.get("level", "INFO")).upper()
+        log_level = getattr(logging, level_name, logging.INFO)
+        log_format = cfg.get("format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        log_file = cfg.get("file")
+
+        handlers = [logging.StreamHandler()]
+        if log_file:
+            try:
+                log_path = Path(str(log_file))
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                handlers.append(logging.FileHandler(log_path, encoding="utf-8"))
+            except Exception:
+                # If file handler fails, continue with console logging.
+                pass
+
+        logging.basicConfig(level=log_level, format=log_format, handlers=handlers)
 
     def start(self):
         """Start the monitoring loop."""
@@ -404,8 +428,8 @@ class DesktopAgent:
         idle_duration = idle_metrics.get('idle_duration_sec', 0)
         session_duration = int((datetime.utcnow() - datetime.fromisoformat(self.current_session.start_time)).total_seconds())
         
-        # Only scan if idle for at least 30% of session duration
-        if idle_duration > session_duration * 0.3:
+        # Only scan if idle for at least configured ratio of the current session
+        if idle_duration > session_duration * float(self.loc_scan_idle_ratio_threshold):
             try:
                 print("[LOCScanner] User idle, starting background LOC scan...")
                 self.loc_scanner.scan_all_projects()

@@ -6,7 +6,7 @@
 sample_interval_sec: 2
 
 # Flush interval in seconds (how often to flush logs to database)
-flush_interval_sec: 300  # 5 minutes
+flush_interval_sec: 300  # configurable
 
 # Idle threshold in seconds (inactivity before marking as idle)
 # 10 sec: Captures genuine away-from-desk, ignores brief thinking pauses
@@ -15,23 +15,24 @@ idle_threshold_sec: 10
 # Behavioral metrics settings
 behavioral_metrics:
   click_debounce_ms: 50  # Ignore clicks < 50ms apart (auto-clicks)
+  max_typing_intensity_kpm: 200
+  max_mouse_click_rate_cpm: 200
 
-# Privacy mode: strict (no titles) or relaxed (hashed titles)
-privacy_mode: strict
+
 
 ## PHASE 2: Block Evaluation Settings
 
 # Block duration in seconds for context state evaluation
 # Used by: BlockEvaluator._run_loop() and evaluate_block()
-# Purpose: Aggregates all activity logs from a 5-minute window to predict context state
+# Purpose: Aggregates all activity logs from a block window to predict context state
 # Flow:
 #   1. Wakes at wall-clock boundaries (e.g., 2:00, 2:05, 2:10)
 #   2. Queries all NULL-context logs from past block_duration_sec
 #   3. Aggregates metrics: KPM, CPM, scrolls, app switches, idle time
 #   4. Runs ML model (or heuristic fallback) to predict context state
 #   5. Retroactively tags all logs in block with prediction
-# Fallback: If config missing, defaults to 300 seconds (5 min)
-block_duration_sec: 300  # 5 minutes
+# Fallback: If config missing, defaults to 300 seconds
+block_duration_sec: 300
 
 # Heuristic rule thresholds for context detection
 # Used by: ContextDetector.detect_context() decision tree
@@ -75,11 +76,9 @@ heuristics:
 #   - productivity_apps: Apps that indicate focused/research work (IDEs, browsers, terminals)
 #     Used in _classify_app() to distinguish RESEARCH (multiple productivity apps) from DISTRACTION
 #   - distraction_apps: Social media, entertainment, messaging apps
-#     Used in is_distraction_app() and ETLPipeline to mark sessions as DISTRACTED + __unassigned__
+#     Used in is_distraction_app() and BlockEvaluator/ContextDetector feature extraction
 #   - custom lists allow users to add/remove apps without modifying code
 app_categorization:
-  enabled: true              # Enable/disable app categorization
-  
   # Productivity apps (development tools, communication, browsers for research)
   # Used to distinguish RESEARCH context (multiple productivity apps) from DISTRACTION
   # Examples: VS Code, PyCharm, browsers, terminals, Slack, Teams (work comms)
@@ -120,16 +119,11 @@ app_categorization:
     - teams
     - teams.exe
   
-  # Distraction/blacklist apps (social media, entertainment, messaging)
+  # Distraction apps (social media, entertainment, messaging)
   # Used by: 
   #   1. ContextDetector.is_distraction_app() - checks if app visit is distraction
-  #   2. ETLPipeline._build_distraction_apps_list() - loads for blacklist detection
-  #   3. daily_project_context table - distracted time tracked under __unassigned__ project
+  #   2. BlockEvaluator - marks touched_distraction_app for context inference
   # Behavior: Substring matching on lowercased app name (e.g., "discord" matches "discord.exe")
-  # Impact: When detected, session marked as:
-  #   - context_state = "Distracted"
-  #   - project_name = "__unassigned__" (won't pollute real project metrics)
-  #   - stuck_project cleared (can't re-establish focus with sticky project)
   distraction_apps:
     - discord
     - discord.exe
@@ -165,21 +159,11 @@ app_categorization:
   
   # Custom distraction apps (additional apps to add to the list above)
   # Format: app names to monitor as distractions
-  custom_distraction_apps:
-    - gaming_app
-    - streaming_service
-    # Users can add their own apps here
+  custom_distraction_apps: []
   
   # Custom productivity apps (add to default list)
-  custom_productivity_apps:
-    - custom_ide
-    - internal_tool
-    # Users can add their own apps here
-  
-  # Apps to exclude from monitoring
-  exclude_apps:
-    - System
-    - explorer.exe
+  custom_productivity_apps: []
+
 
 # Project context detection (IDE titles + safe filesystem probing)
 # Used by: ProjectDetector class (monitor/project_detector.py)
@@ -301,6 +285,7 @@ project_detector:
     # True: Check all user drives first, then C: only if needed (current behavior)
     # False: Skip C: entirely (faster but might miss projects on system drive)
     # Fallback: If missing, defaults to False (C: skipped)
+    search_system_drive_last: false
 
 ## PHASE 3: Machine Learning Settings
 
@@ -380,13 +365,12 @@ esm_popup:
 # ETL Pipeline Settings (Maestro Orchestrator)
 # Used by: 
 #   - DesktopAgent (agent.py - COLLECTION PHASE): Applies sticky project logic when flushing sessions
-#   - Maestro ETL pipeline (aggregate/ module - AGGREGATION PHASE): Currently still has sticky logic (for backward compat)
+#   - ETL pipeline (aggregate/ module - AGGREGATION PHASE): Buckets events and runs aggregators
 # Purpose: Configure context aggregation behavior (timezone, project stickiness, app display names)
 # NOTE: SHIFT-LEFT IMPLEMENTATION
 #   - Sticky project logic moved to COLLECTION PHASE (agent.py)
 #   - When a browser/terminal session has no explicit project, it inherits last-detected project
 #   - This means raw_activity_logs table is CLEAN from the first second (no NULL projects)
-#   - Old aggregation-phase sticky logic can be removed in future (kept pending for now)
 # Flow:
 #   1. Raw behavioral events collected with timestamps + app + window title
 #   2. [NEW] At collection: When flushing a generic app (browser) with no project:
@@ -410,7 +394,7 @@ etl_pipeline:
   #   1. Check: Is there a sticky_project_name in memory?
   #   2. Check: Was it seen less than TTL seconds ago?
   #   3. Yes: Assign that project to browser activity → clean data in DB
-  #   4. No: Leave project NULL → triggers [later] distracted/unassigned logic
+  #   4. No: Leave project NULL
   # Multitasking Example:
   #   00:00-05:00 VS Code (Project A): sticky = "Project A"
   #   00:05-10:00 Chrome (no project): sticky is valid → DB saved as "Project A"
@@ -475,6 +459,14 @@ etl_pipeline:
 # Safety: skip_directories prevents double-counting (node_modules duplicates source files) and scanning build artifacts
 # Fallback: If config missing, no language mapping (files unclassified), no directory skipping (slow scans)
 loc_scanner:
+  # How often to run background LOC scans (only when user idle)
+  # Used by: DesktopAgent._check_idle_and_scan_loc()
+  scan_interval_sec: 3600
+
+  # Idle ratio required to trigger a scan (idle_sec / session_duration_sec)
+  # Used by: DesktopAgent._check_idle_and_scan_loc()
+  idle_ratio_threshold: 0.3
+
   # File extensions → language mapping (for code volume tracking)
   language_extensions:
     .py: "Python"

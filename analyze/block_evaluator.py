@@ -1,4 +1,4 @@
-"""5-Minute rolling block evaluator for context state detection."""
+"""Rolling block evaluator for context state detection."""
 import threading
 import time
 from datetime import datetime, timedelta
@@ -11,9 +11,9 @@ from aggregate.etl_pipeline import ETLPipeline
 class BlockEvaluator:
     """Background evaluator that retroactively tags activity logs with context state.
     
-    Runs on a 5-minute heartbeat with ML-based predictions:
-    1. Wakes up every 5 minutes (e.g., at 2:00, 2:05, 2:10 PM)
-    2. Queries all unevaluated logs (context_state IS NULL) from the last 5 minutes
+    Runs on a configurable heartbeat (block_duration_sec) with ML-based predictions:
+    1. Wakes up every block (e.g., at 2:00, 2:05, 2:10 PM when block=5 min)
+    2. Queries all unevaluated logs (context_state IS NULL) from the last block
     3. Aggregates behavioral metrics across all sessions in that block
     4. Extracts 9-dimensional feature vector from block metrics
     5. Runs ML model (XGBoost) on features for prediction
@@ -134,7 +134,8 @@ class BlockEvaluator:
         self.running = True
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
-        print(f"[BlockEvaluator] Started background thread (5-min heartbeat)")
+        minutes = self.block_duration_sec / 60
+        print(f"[BlockEvaluator] Started background thread ({minutes:g}-min heartbeat)")
     
     def stop(self) -> None:
         """Stop the background evaluator thread and clean up resources."""
@@ -184,7 +185,7 @@ class BlockEvaluator:
         five_mins_ago = now - timedelta(seconds=self.block_duration_sec)
         
         try:
-            # Query unevaluated logs from last 5-minute block.
+            # Query unevaluated logs from the last block.
             # Phase 2 Hardening: query_by_end_time=True (default) ensures we catch sessions
             # that started before the block but ended within it (prevents "never-tagged" logs).
             logs = self.db.query_logs(
@@ -268,7 +269,7 @@ class BlockEvaluator:
             return self.context_detector.detect_context(block_metrics)
     
     def _aggregate_block_metrics(self, logs: list) -> dict:
-        """Aggregate behavioral metrics from all sessions in a 5-minute block.
+        """Aggregate behavioral metrics from all sessions in a block.
         
         Takes individual session metrics and combines them into block-level metrics
         that represent the developer's overall behavioral state during the block.

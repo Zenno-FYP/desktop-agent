@@ -1,7 +1,7 @@
 """
 Feature Extractor for ML Model
 
-Extracts 9 features from 5-minute block_metrics dictionary.
+Extracts 9 features from a block_metrics dictionary.
 Used by both synthetic data generator and ML predictor.
 
 Features:
@@ -71,7 +71,7 @@ class FeatureExtractor:
         
         # 4. Idle Ratio (0.0 to 1.0)
         idle_duration = float(block_metrics.get('idle_duration_sec', 0))
-        total_duration = float(block_metrics.get('total_duration_sec', 300))
+        total_duration = float(block_metrics.get('total_duration_sec', 1))
         idle_ratio = idle_duration / max(total_duration, 1)
         
         # 5. App Switch Count
@@ -92,7 +92,7 @@ class FeatureExtractor:
             end_time = datetime.fromisoformat(end_time)
             time_of_day = float(end_time.hour)
         else:
-            time_of_day = 12.0  # Default to noon
+            time_of_day = float(datetime.utcnow().hour)
         
         # 9. Day of Week (0-6, Monday-Sunday)
         if isinstance(end_time, datetime):
@@ -101,7 +101,7 @@ class FeatureExtractor:
             end_time = datetime.fromisoformat(end_time)
             day_of_week = float(end_time.weekday())
         else:
-            day_of_week = 2.0  # Default to Wednesday
+            day_of_week = float(datetime.utcnow().weekday())
         
         # Return as numpy array
         return np.array([
@@ -146,8 +146,7 @@ class FeatureExtractor:
             'time_of_day',
             'day_of_week',
         ]
-    
-    @staticmethod
+
     def validate_features(features):
         """
         Validate feature vector for bounds and NaN values.

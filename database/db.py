@@ -14,6 +14,7 @@ class Database:
         check_same_thread: bool = False,
         timeout: float = 10.0,
         journal_mode: str = "WAL",
+        config=None,
     ):
         """Initialize database connection.
         
@@ -26,6 +27,7 @@ class Database:
         self.check_same_thread = bool(check_same_thread)
         self.timeout = float(timeout)
         self.journal_mode = journal_mode
+        self.config = config
 
     @staticmethod
     def _sanitize_journal_mode(journal_mode: str) -> str:
@@ -57,73 +59,56 @@ class Database:
             self.conn = None
 
     def create_tables(self):
-        """Create raw_activity_logs table if it doesn't exist."""
+        """Create all tables and indexes if they don't exist."""
         if not self.conn:
             raise RuntimeError("Database not connected. Call connect() first.")
 
-        self.conn.execute("""
+        statements = [
+            """
             CREATE TABLE IF NOT EXISTS raw_activity_logs (
                 log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                start_time TEXT NOT NULL,             -- When the user started looking at this window
-                end_time TEXT NOT NULL,               -- When they switched away or the flusher ran
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
                 app_name TEXT NOT NULL,
                 window_title TEXT,
                 duration_sec INTEGER NOT NULL,
-                
-                -- Extracted Context
-                project_name TEXT, 
+
+                project_name TEXT,
                 project_path TEXT,
                 active_file TEXT,
                 detected_language TEXT,
-                
-                -- Behavioral Signals (Features for ML Retraining)
-                typing_intensity REAL DEFAULT 0.0,    -- Keystrokes per minute (KPM)
-                mouse_click_rate REAL DEFAULT 0.0,    -- Clicks per minute
-                mouse_scroll_events INTEGER DEFAULT 0,-- Great for detecting "Reading Docs"
-                idle_duration_sec INTEGER DEFAULT 0,  -- Exactly how much of 'duration_sec' was idle
-                
-                -- ML Output (Current Model's Guess)
-                context_state TEXT,       -- "Focused", "Distracted", "Idle", "Reading"
-                confidence_score REAL,    -- e.g., 0.92
-                
-                -- Phase 3B: ESM Verification (Ground-Truth User Feedback)
-                manually_verified_label TEXT NULL,    -- User's corrected answer (NULL = unverified)
-                verified_at TIMESTAMP NULL,           -- When user verified this entry
-                
-                -- Phase 4: Aggregation Tracking
-                is_aggregated INTEGER NOT NULL DEFAULT 0,      -- 0 = pending, 1 = processed
-                aggregated_at TEXT NULL,                       -- UTC ISO when aggregated
-                aggregation_version INTEGER NOT NULL DEFAULT 1  -- For future re-aggregation
+
+                typing_intensity REAL DEFAULT 0.0,
+                mouse_click_rate REAL DEFAULT 0.0,
+                mouse_scroll_events INTEGER DEFAULT 0,
+                idle_duration_sec INTEGER DEFAULT 0,
+
+                context_state TEXT,
+                confidence_score REAL,
+
+                manually_verified_label TEXT NULL,
+                verified_at TIMESTAMP NULL,
+
+                is_aggregated INTEGER NOT NULL DEFAULT 0,
+                aggregated_at TEXT NULL,
+                aggregation_version INTEGER NOT NULL DEFAULT 1
             )
-        """)
-        self.conn.commit()
-        
-        # Create indexes for Phase 4 aggregation queries (optimized for end_time)
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_raw_agg_pending ON raw_activity_logs(is_aggregated, end_time)"
-        )
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_raw_end_time ON raw_activity_logs(end_time)"
-        )
-        self.conn.commit()
-        
-        # Phase 4: Create projects table (Metadata Hub)
-        self.conn.execute("""
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_raw_agg_pending ON raw_activity_logs(is_aggregated, end_time)",
+            "CREATE INDEX IF NOT EXISTS idx_raw_end_time ON raw_activity_logs(end_time)",
+
+            """
             CREATE TABLE IF NOT EXISTS projects (
                 project_name TEXT PRIMARY KEY,
-                project_path TEXT,                 -- local-only (never synced)
-                first_seen_at TEXT NOT NULL,       -- UTC ISO
-                last_active_at TEXT NOT NULL,      -- UTC ISO
+                project_path TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_active_at TEXT NOT NULL,
                 needs_sync INTEGER NOT NULL DEFAULT 1
             )
-        """)
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_projects_needs_sync ON projects(needs_sync)"
-        )
-        self.conn.commit()
-        
-        # Phase 4: Create daily_project_languages table
-        self.conn.execute("""
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_projects_needs_sync ON projects(needs_sync)",
+
+            """
             CREATE TABLE IF NOT EXISTS daily_project_languages (
                 date TEXT NOT NULL,
                 project_name TEXT NOT NULL,
@@ -133,14 +118,10 @@ class Database:
                 PRIMARY KEY (date, project_name, language_name),
                 FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
             )
-        """)
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_dpl_needs_sync ON daily_project_languages(needs_sync)"
-        )
-        self.conn.commit()
-        
-        # Phase 4: Create daily_project_apps table
-        self.conn.execute("""
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_dpl_needs_sync ON daily_project_languages(needs_sync)",
+
+            """
             CREATE TABLE IF NOT EXISTS daily_project_apps (
                 date TEXT NOT NULL,
                 project_name TEXT NOT NULL,
@@ -150,14 +131,10 @@ class Database:
                 PRIMARY KEY (date, project_name, app_name),
                 FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
             )
-        """)
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_dpa_needs_sync ON daily_project_apps(needs_sync)"
-        )
-        self.conn.commit()
-        
-        # Phase 4: Create daily_project_skills table
-        self.conn.execute("""
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_dpa_needs_sync ON daily_project_apps(needs_sync)",
+
+            """
             CREATE TABLE IF NOT EXISTS daily_project_skills (
                 date TEXT NOT NULL,
                 project_name TEXT NOT NULL,
@@ -167,14 +144,10 @@ class Database:
                 PRIMARY KEY (date, project_name, skill_name),
                 FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
             )
-        """)
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_dps_needs_sync ON daily_project_skills(needs_sync)"
-        )
-        self.conn.commit()
-        
-        # Phase 4: Create daily_project_context table
-        self.conn.execute("""
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_dps_needs_sync ON daily_project_skills(needs_sync)",
+
+            """
             CREATE TABLE IF NOT EXISTS daily_project_context (
                 date TEXT NOT NULL,
                 project_name TEXT NOT NULL,
@@ -184,14 +157,10 @@ class Database:
                 PRIMARY KEY (date, project_name, context_state),
                 FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
             )
-        """)
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_dpc_needs_sync ON daily_project_context(needs_sync)"
-        )
-        self.conn.commit()
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_dpc_needs_sync ON daily_project_context(needs_sync)",
 
-        # Phase 4: Create daily_project_behavior table (Physical effort metrics)
-        self.conn.execute("""
+            """
             CREATE TABLE IF NOT EXISTS daily_project_behavior (
                 date TEXT NOT NULL,
                 project_name TEXT NOT NULL,
@@ -203,14 +172,10 @@ class Database:
                 PRIMARY KEY (date, project_name),
                 FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
             )
-        """)
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_dpb_needs_sync ON daily_project_behavior(needs_sync)"
-        )
-        self.conn.commit()
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_dpb_needs_sync ON daily_project_behavior(needs_sync)",
 
-        # Phase 4: Create project_loc_snapshots table (Code volume by language)
-        self.conn.execute("""
+            """
             CREATE TABLE IF NOT EXISTS project_loc_snapshots (
                 project_name TEXT NOT NULL,
                 language_name TEXT NOT NULL,
@@ -221,22 +186,13 @@ class Database:
                 PRIMARY KEY (project_name, language_name),
                 FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
             )
-        """)
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_pls_needs_sync ON project_loc_snapshots(needs_sync)"
-        )
-        self.conn.commit()
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_pls_needs_sync ON project_loc_snapshots(needs_sync)",
+        ]
 
-
-
-    def start_session(self, app_name: str, window_title: str = "") -> int:
-        """DEPRECATED: Use insert_activity_log instead."""
-        raise NotImplementedError("Use insert_activity_log instead")
-
-    def end_session(self, session_id: int) -> None:
-        """DEPRECATED: Use insert_activity_log instead."""
-        raise NotImplementedError("Use insert_activity_log instead")
-
+        with self.conn:
+            for stmt in statements:
+                self.conn.execute(stmt)
     def insert_activity_log(self, activity_data: dict) -> int:
         """Insert an activity log entry into raw_activity_logs.
         
@@ -315,9 +271,20 @@ class Database:
         if log_dict.get('idle_duration_sec', 0) > log_dict['duration_sec']:
             raise ValueError("Idle duration cannot exceed total duration")
         
-        # Cap unrealistic values
-        if log_dict.get('typing_intensity', 0) > 200:
-            log_dict['typing_intensity'] = 200
+        # Cap unrealistic values (configurable)
+        max_kpm = 200.0
+        max_cpm = 200.0
+        if self.config is not None:
+            try:
+                max_kpm = float(self.config.get("behavioral_metrics.max_typing_intensity_kpm", max_kpm))
+                max_cpm = float(self.config.get("behavioral_metrics.max_mouse_click_rate_cpm", max_cpm))
+            except Exception:
+                pass
+
+        if log_dict.get('typing_intensity', 0) > max_kpm:
+            log_dict['typing_intensity'] = max_kpm
+        if log_dict.get('mouse_click_rate', 0) > max_cpm:
+            log_dict['mouse_click_rate'] = max_cpm
         
         return True
     
@@ -390,7 +357,7 @@ class Database:
                            confidence_score: float) -> int:
         """Retroactively tag logs with context state and confidence.
         
-        Used by BlockEvaluator to batch-update all logs in a 5-minute block
+        Used by BlockEvaluator to batch-update all logs in a block
         with the aggregated context evaluation.
         
         Args:
@@ -613,7 +580,11 @@ class Database:
         cursor = self.conn.execute('''
             SELECT p.project_name, p.project_path, p.first_seen_at, p.last_active_at, p.needs_sync
             FROM projects p
-            LEFT JOIN project_loc_snapshots pls ON p.project_name = pls.project_name
+            LEFT JOIN (
+                SELECT project_name, MAX(last_scanned_at) AS last_scanned_at
+                FROM project_loc_snapshots
+                GROUP BY project_name
+            ) pls ON p.project_name = pls.project_name
             WHERE pls.last_scanned_at IS NULL
                OR p.last_active_at > pls.last_scanned_at
             ORDER BY p.last_active_at DESC

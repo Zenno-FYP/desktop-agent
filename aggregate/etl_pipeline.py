@@ -7,9 +7,9 @@ and pass the "clean" batch to specialized aggregators for their specific tasks.
 Flow:
 1. EXTRACT: Query raw_activity_logs for unprocessed, tagged logs
 2. TRANSFORM: Run once:
-   - Sticky-project logic (with 15-min TTL)
-   - Blacklist/distraction detection
-   - Midnight splitting (convert UTC to local dates, split overnight boundaries)
+    - Project attribution (trust raw logs; assign "__unassigned__" when missing)
+    - Manual context override (use manually_verified_label when present)
+    - Midnight splitting (convert UTC to local dates, split overnight boundaries)
 3. DELEGATE: Pass clean batch to each aggregator → get SQL commands
 4. LOAD: Execute all SQL commands in ONE atomic transaction
 """
@@ -117,9 +117,8 @@ class ETLPipeline:
         """Apply transformation logic once to create "clean" logs.
         
         SIMPLIFIED (Shift-Left Sticky Project):
-        1. Blacklist detection (distracted apps) - override to "Distracted"
-        2. Trust database project_name (already filled by upstream collector logic)
-        3. Midnight splitting (UTC → local dates, split overnight boundaries)
+        1. Trust database project_name (already filled by upstream collector logic)
+        2. Midnight splitting (UTC → local dates, split overnight boundaries)
         
         NOTE: Sticky project logic has been moved to collection phase (agent.py).
         If project_name is in raw_activity_logs, it is mathematically correct.
