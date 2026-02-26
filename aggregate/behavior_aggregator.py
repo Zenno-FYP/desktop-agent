@@ -31,10 +31,6 @@ class BehaviorAggregator:
         Returns:
             List of (query, params) tuples ready to execute in a transaction
         """
-        # Need raw logs to get behavioral metrics (transformed_logs don't have them)
-        # We'll need to query the raw logs separately for metrics
-        # For now, we'll receive them as additional context - we need to update ETL to pass them
-        
         # Group by (date, project_name) → aggregate metrics
         aggregates = defaultdict(lambda: {
             "keystrokes": 0,

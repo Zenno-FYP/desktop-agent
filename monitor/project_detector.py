@@ -92,10 +92,10 @@ class ProjectDetector:
         """Strictly bounded, high-speed fallback search across drives.
         
         Uses hard safety limits to protect < 5% CPU constraint:
-        - Time Limit: Aborts if search takes > 1.0 seconds (PRIMARY safety)
-        - Depth Limit: Searches up to 6 folders deep (reasonable depth)
+        - Time Limit: Aborts if search takes longer than configured limit (PRIMARY safety)
+        - Depth Limit: Searches only up to configured depth (SECONDARY safety)
         - Exclusion: Skips Windows, Program Files, node_modules, etc.
-        - Drive Filtering: Skips C: drive (system) to avoid expensive scans
+        - Drive Filtering: Optionally includes the system drive (C:) last, or skips it entirely
         
         Args:
             active_file_name: The file to find (e.g., 'parser.y')
@@ -108,12 +108,21 @@ class ProjectDetector:
         max_depth = self.lightweight_search_cfg["max_depth"]
         time_limit_sec = self.lightweight_search_cfg["time_limit_sec"]
         search_system_drive_last = self.lightweight_search_cfg["search_system_drive_last"]
+
+        # Disabled by configuration.
+        if max_depth <= 0 or time_limit_sec <= 0:
+            return None
         
         start_time = time.time()
         
+        system_drive = "C:\\"
         drives = [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]
-        if search_system_drive_last:
-            drives = [d for d in drives if d.upper() != "C:\\"] + (["C:\\"] if os.path.exists("C:\\") else [])
+        drives_non_system = [d for d in drives if d.upper() != system_drive]
+
+        # Default behavior: skip C: entirely (expensive). If enabled, search it last.
+        drives = drives_non_system
+        if search_system_drive_last and os.path.exists(system_drive):
+            drives = drives_non_system + [system_drive]
         
         for drive in drives:
             try:

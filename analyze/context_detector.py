@@ -12,7 +12,7 @@ except ModuleNotFoundError:
 
 
 class ContextDetector:
-    """Detect developer's mental context from 5-minute block metrics.
+    """Detect developer's mental context from block metrics.
     
     Uses Application Categorization to distinguish between:
     - Research/Debugging: Multiple app switches but all productive apps
@@ -111,10 +111,10 @@ class ContextDetector:
         return any(dist_app in app_name_lower for dist_app in self.distraction_apps)
     
     def detect_context(self, block_metrics: dict) -> Tuple[str, float]:
-        """Evaluate developer's mental state for a 5-minute block.
+        """Evaluate developer's mental state for a block.
         
         Args:
-            block_metrics: Aggregated metrics from a 5-minute block containing:
+            block_metrics: Aggregated metrics from a block containing:
                 - typing_intensity: float - KPM (keystrokes per minute) for this block
                 - mouse_click_rate: float - CPM (clicks per minute) for this block
                 - mouse_scroll_events: int - Total scrolls in the entire block

@@ -1,4 +1,5 @@
 """Track behavioral signals: typing intensity, clicks, scrolls."""
+import logging
 import time
 from typing import Dict, Any
 from pynput import keyboard, mouse
@@ -36,6 +37,8 @@ class BehavioralMetrics:
         self.keyboard_listener = None
         self.mouse_listener = None
 
+        self.logger = logging.getLogger(__name__)
+
     def start_listening(self):
         """Start keyboard and mouse listeners."""
         try:
@@ -49,10 +52,10 @@ class BehavioralMetrics:
                 on_scroll=self._on_mouse_scroll
             )
             self.mouse_listener.start()
-            
-            print("[BehavioralMetrics] Listeners started")
+
+            self.logger.info("[BehavioralMetrics] Listeners started")
         except Exception as e:
-            print(f"[BehavioralMetrics] Error starting listeners: {e}")
+            self.logger.exception("[BehavioralMetrics] Error starting listeners")
 
     def stop_listening(self):
         """Stop keyboard and mouse listeners."""
@@ -63,9 +66,9 @@ class BehavioralMetrics:
             if self.mouse_listener:
                 self.mouse_listener.stop()
                 self.mouse_listener = None
-            print("[BehavioralMetrics] Listeners stopped")
+            self.logger.info("[BehavioralMetrics] Listeners stopped")
         except Exception as e:
-            print(f"[BehavioralMetrics] Error stopping listeners: {e}")
+            self.logger.exception("[BehavioralMetrics] Error stopping listeners")
 
     def _on_key_press(self, key):
         """Handle keyboard press event."""
@@ -83,7 +86,7 @@ class BehavioralMetrics:
                 
                 self.last_activity_time = time.time()
         except Exception as e:
-            print(f"[BehavioralMetrics] Key press error: {e}")
+            self.logger.exception("[BehavioralMetrics] Key press error")
 
     def _on_mouse_click(self, x, y, button, pressed):
         """Handle mouse click event."""
@@ -99,7 +102,7 @@ class BehavioralMetrics:
                     
                     self.last_activity_time = current_time
         except Exception as e:
-            print(f"[BehavioralMetrics] Click error: {e}")
+            self.logger.exception("[BehavioralMetrics] Click error")
 
     def _on_mouse_scroll(self, x, y, button, delta):
         """Handle mouse scroll event."""
@@ -108,7 +111,7 @@ class BehavioralMetrics:
                 self.scroll_count += 1
                 self.last_activity_time = time.time()
         except Exception as e:
-            print(f"[BehavioralMetrics] Scroll error: {e}")
+            self.logger.exception("[BehavioralMetrics] Scroll error")
 
     def get_metrics(self) -> Dict[str, Any]:
         """Get current metrics and calculate rates.
