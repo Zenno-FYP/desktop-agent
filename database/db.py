@@ -209,6 +209,24 @@ class Database:
         )
         self.conn.commit()
 
+        # Phase 4: Create project_loc_snapshots table (Code volume by language)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS project_loc_snapshots (
+                project_name TEXT NOT NULL,
+                language_name TEXT NOT NULL,
+                lines_of_code INTEGER NOT NULL DEFAULT 0,
+                file_count INTEGER NOT NULL DEFAULT 0,
+                last_scanned_at TEXT NOT NULL,
+                needs_sync INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (project_name, language_name),
+                FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pls_needs_sync ON project_loc_snapshots(needs_sync)"
+        )
+        self.conn.commit()
+
 
 
     def start_session(self, app_name: str, window_title: str = "") -> int:
@@ -581,6 +599,36 @@ class Database:
             })
         
         return result
+
+    def get_active_projects_since_scan(self):
+        """Get projects that have been active since their last LOC scan.
+        
+        Only returns projects where last_active_at > last_scanned_at (or no previous scan).
+        This optimizes LOC scanning to only re-scan projects that have changed.
+        
+        Returns:
+            List of project dicts ordered by last_active_at DESC.
+            Keys: project_name, project_path, first_seen_at, last_active_at, needs_sync
+        """
+        cursor = self.conn.execute('''
+            SELECT p.project_name, p.project_path, p.first_seen_at, p.last_active_at, p.needs_sync
+            FROM projects p
+            LEFT JOIN project_loc_snapshots pls ON p.project_name = pls.project_name
+            WHERE pls.last_scanned_at IS NULL
+               OR p.last_active_at > pls.last_scanned_at
+            ORDER BY p.last_active_at DESC
+        ''')
+        rows = cursor.fetchall()
+        return [
+            {
+                "project_name": row[0],
+                "project_path": row[1],
+                "first_seen_at": row[2],
+                "last_active_at": row[3],
+                "needs_sync": row[4],
+            }
+            for row in rows
+        ]
 
     # ==================== DAILY PROJECT LANGUAGES ====================
 

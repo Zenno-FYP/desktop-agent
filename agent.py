@@ -13,6 +13,7 @@ from monitor.idle_detector import IdleDetector
 from monitor.project_detector import ProjectDetector
 from analyze.context_detector import ContextDetector
 from analyze.block_evaluator import BlockEvaluator
+from aggregate.loc_scanner import LOCScanner
 
 
 class ActivitySession:
@@ -162,6 +163,11 @@ class DesktopAgent:
         self.block_evaluator = BlockEvaluator(self.db, self.context_detector, config=self.config, block_duration_sec=block_duration_sec)
         self.block_evaluator.start()
         
+        # Initialize Phase 4: LOC Scanner (triggered on idle time)
+        self.loc_scanner = LOCScanner(self.db, config=self.config)
+        self.loc_scan_interval_sec = self.config.get("loc_scan_interval_sec", 3600)  # 1 hour default
+        self.last_loc_scan_time = 0
+        
         # Session tracking
         self.current_session = None
         self.current_app = None
@@ -176,6 +182,7 @@ class DesktopAgent:
         self._recover_sticky_project()
         
         self.last_flush_time = time.time()
+        self.last_idle_scan_check = 0  # Track when we last checked for idle LOC scanning
 
     def start(self):
         """Start the monitoring loop."""
@@ -233,6 +240,9 @@ class DesktopAgent:
                                 click_debounce_ms=self.click_debounce_ms,
                                 config=self.config,
                             )
+                
+                # Check idle and trigger LOC scanning
+                self._check_idle_and_scan_loc()
                 
                 time.sleep(self.sample_interval)
         
@@ -372,6 +382,37 @@ class DesktopAgent:
             print(f"[Error] Failed to flush session: {e}")
             import traceback
             traceback.print_exc()
+
+    def _check_idle_and_scan_loc(self):
+        """Check if user is idle and trigger LOC scanning periodically.
+        
+        LOC scanning is CPU-intensive, so only run when:
+        1. User is idle (no activity detected)
+        2. Enough time has passed since last scan (default 1 hour)
+        """
+        current_time = time.time()
+        
+        # Check if ready to scan based on interval
+        if current_time - self.last_loc_scan_time < self.loc_scan_interval_sec:
+            return
+        
+        # Check if user is currently idle
+        if not self.current_session:
+            return
+        
+        idle_metrics = self.current_session.idle_detector.get_idle_metrics()
+        idle_duration = idle_metrics.get('idle_duration_sec', 0)
+        session_duration = int((datetime.utcnow() - datetime.fromisoformat(self.current_session.start_time)).total_seconds())
+        
+        # Only scan if idle for at least 30% of session duration
+        if idle_duration > session_duration * 0.3:
+            try:
+                print("[LOCScanner] User idle, starting background LOC scan...")
+                self.loc_scanner.scan_all_projects()
+                self.last_loc_scan_time = current_time
+                print("[LOCScanner] Completed LOC scan")
+            except Exception as e:
+                print(f"[Error] LOC scanning failed: {e}")
 
     def _shutdown(self):
         """Graceful shutdown."""

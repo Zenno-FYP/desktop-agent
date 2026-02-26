@@ -17,146 +17,31 @@ from datetime import datetime
 class LOCScanner:
     """Scans project directories for lines of code by language."""
 
-    # File extensions → language mapping
-    LANGUAGE_EXTENSIONS = {
-        ".py": "Python",
-        ".js": "JavaScript",
-        ".ts": "TypeScript",
-        ".jsx": "JavaScript",
-        ".tsx": "TypeScript",
-        ".java": "Java",
-        ".cpp": "C++",
-        ".cc": "C++",
-        ".cxx": "C++",
-        ".c": "C",
-        ".h": "C",
-        ".hpp": "C++",
-        ".cs": "C#",
-        ".go": "Go",
-        ".rs": "Rust",
-        ".rb": "Ruby",
-        ".php": "PHP",
-        ".swift": "Swift",
-        ".kt": "Kotlin",
-        ".scala": "Scala",
-        ".sh": "Bash",
-        ".bash": "Bash",
-        ".sql": "SQL",
-        ".html": "HTML",
-        ".htm": "HTML",
-        ".css": "CSS",
-        ".scss": "SCSS",
-        ".sass": "SASS",
-        ".less": "LESS",
-        ".json": "JSON",
-        ".yaml": "YAML",
-        ".yml": "YAML",
-        ".xml": "XML",
-        ".md": "Markdown",
-        ".rst": "ReStructuredText",
-        ".tex": "LaTeX",
-        ".r": "R",
-        ".lua": "Lua",
-        ".perl": "Perl",
-        ".pl": "Perl",
-        ".dart": "Dart",
-        ".groovy": "Groovy",
-        ".gradle": "Gradle",
-        ".clj": "Clojure",
-        ".cljs": "ClojureScript",
-        ".erl": "Erlang",
-        ".ex": "Elixir",
-        ".exs": "Elixir",
-        ".hx": "Haxe",
-        ".vim": "VimScript",
-        ".m": "Objective-C",
-        ".mm": "Objective-C++",
-    }
-
-    # Directories to skip (common build/dependency folders)
-    SKIP_DIRS = {
-        ".git",
-        ".svn",
-        ".hg",
-        "node_modules",
-        "venv",
-        ".venv",
-        "env",
-        ".env",
-        "__pycache__",
-        "dist",
-        "build",
-        ".build",
-        "target",
-        "out",
-        ".gradle",
-        ".idea",
-        ".vscode",
-        ".vs",
-        "vendor",
-        ".cargo",
-        "elm-stuff",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".tox",
-        "htmlcov",
-        ".hypothesis",
-        "eggs",
-        ".eggs",
-        "parts",
-        "sdist",
-        "var",
-        "wheels",
-        "pip-wheel-metadata",
-        "share",
-        "python-eggs",
-        "lib",
-        "lib64",
-        ".Python",
-        "develop-eggs",
-        "downloads",
-        ".webassets-cache",
-        ".scrapy",
-        ".coverage",
-        ".coverage.*",
-        ".cache",
-        "nosetests.xml",
-        "coverage.xml",
-        "*.cover",
-        ".ipynb_checkpoints",
-        ".pytype",
-        ".dmypy.json",
-        "dmypy.json",
-        ".pyre",
-        ".egg-info",
-        "site",
-        ".terraform",
-    }
-
     def __init__(self, db, config=None):
         """Initialize LOC scanner.
         
         Args:
             db: Database instance (from database/db.py)
-            config: Config instance (from config/config.py) - optional but recommended
+            config: Config instance (from config/config.py) - REQUIRED
         """
         self.db = db
         
+        if not config:
+            raise ValueError("LOCScanner requires config instance with loc_scanner settings")
+        
         # Read configuration
-        if config:
-            loc_cfg = config.get('loc_scanner', {})
-            # Convert config dict keys (with dots) to the mapping
-            ext_map = loc_cfg.get('language_extensions', {})
-            # Ensure keys have leading dots
-            self.language_extensions = {
-                (k if k.startswith('.') else f'.{k}'): v 
-                for k, v in ext_map.items()
-            }
-            self.skip_dirs = set(loc_cfg.get('skip_directories', []))
-        else:
-            # Fallback to class-level defaults if no config provided
-            self.language_extensions = self.LANGUAGE_EXTENSIONS
-            self.skip_dirs = self.SKIP_DIRS
+        loc_cfg = config.get('loc_scanner', {})
+        
+        # File extensions → language mapping
+        ext_map = loc_cfg.get('language_extensions', {})
+        # Ensure keys have leading dots
+        self.language_extensions = {
+            (k if k.startswith('.') else f'.{k}'): v 
+            for k, v in ext_map.items()
+        }
+        
+        # Directories to skip during code scanning
+        self.skip_dirs = set(loc_cfg.get('skip_directories', []))
 
     def scan_project(self, project_name):
         """Scan a single project by name and update project_loc_snapshots.
@@ -179,7 +64,7 @@ class LOCScanner:
             return None
 
         # Scan the directory
-        loc_by_language = self._scan_directory(project_path)
+        loc_by_language, file_count_by_language = self._scan_directory(project_path)
 
         # Store results in project_loc_snapshots
         now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -187,36 +72,40 @@ class LOCScanner:
         if loc_by_language:
             with self.db.conn:
                 for language_name, lines_of_code in loc_by_language.items():
+                    file_count = file_count_by_language.get(language_name, 0)
                     self.db.conn.execute(
                         """
-                        INSERT INTO project_loc_snapshots (project_name, language_name, lines_of_code, last_scanned_at, needs_sync)
-                        VALUES (?, ?, ?, ?, 1)
+                        INSERT INTO project_loc_snapshots (project_name, language_name, lines_of_code, file_count, last_scanned_at, needs_sync)
+                        VALUES (?, ?, ?, ?, ?, 1)
                         ON CONFLICT(project_name, language_name) DO UPDATE SET
                             lines_of_code = excluded.lines_of_code,
+                            file_count = excluded.file_count,
                             last_scanned_at = excluded.last_scanned_at,
                             needs_sync = 1
                         """,
-                        (project_name, language_name, lines_of_code, now),
+                        (project_name, language_name, lines_of_code, file_count, now),
                     )
 
-            print(f"[LOCScanner] {project_name}: {len(loc_by_language)} languages, {sum(loc_by_language.values())} LOC")
+            total_files = sum(file_count_by_language.values())
+            print(f"[LOCScanner] {project_name}: {len(loc_by_language)} languages, {sum(loc_by_language.values())} LOC, {total_files} files")
             return loc_by_language
         else:
             print(f"[LOCScanner] No source code found in {project_path}")
             return loc_by_language
 
     def scan_all_projects(self):
-        """Scan all projects in the projects table.
+        """Scan only projects that have been active since their last LOC scan.
         
-        Useful for background worker or bulk initialization.
+        This optimizes scanning by skipping projects that haven't changed.
+        Useful for background worker or periodic maintenance.
         """
-        projects = self.db.get_all_projects()
+        projects = self.db.get_active_projects_since_scan()
 
         if not projects:
-            print("[LOCScanner] No projects to scan")
+            print("[LOCScanner] No active projects to scan")
             return
 
-        print(f"[LOCScanner] Scanning {len(projects)} projects...")
+        print(f"[LOCScanner] Scanning {len(projects)} active projects...")
         scanned_count = 0
 
         for project in projects:
@@ -228,24 +117,26 @@ class LOCScanner:
         print(f"[LOCScanner] Completed: {scanned_count}/{len(projects)} projects scanned")
 
     def _scan_directory(self, project_path):
-        """Recursively scan a directory and count LOC by language.
+        """Recursively scan a directory and count LOC + files by language.
         
         Args:
             project_path: Path to project root directory
             
         Returns:
-            Dict: language_name → total lines_of_code
+            Tuple of (loc_by_language dict, file_count_by_language dict)
+            Each: language_name → count
         """
         loc_by_language = defaultdict(int)
+        file_count_by_language = defaultdict(int)
         project_path_obj = Path(project_path)
 
         if not project_path_obj.exists():
             print(f"[LOCScanner] Path does not exist: {project_path}")
-            return loc_by_language
+            return dict(loc_by_language), dict(file_count_by_language)
 
         if not project_path_obj.is_dir():
             print(f"[LOCScanner] Path is not a directory: {project_path}")
-            return loc_by_language
+            return dict(loc_by_language), dict(file_count_by_language)
 
         try:
             for file_path in project_path_obj.rglob("*"):
@@ -263,11 +154,12 @@ class LOCScanner:
                     if language:
                         loc = self._count_lines(file_path)
                         loc_by_language[language] += loc
+                        file_count_by_language[language] += 1
 
         except (PermissionError, OSError) as e:
             print(f"[LOCScanner] Error scanning {project_path}: {e}")
 
-        return dict(loc_by_language)
+        return dict(loc_by_language), dict(file_count_by_language)
 
     def _should_skip_path(self, file_path):
         """Check if path contains directories to skip.
