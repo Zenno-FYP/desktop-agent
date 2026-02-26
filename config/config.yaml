@@ -34,6 +34,11 @@ behavioral_metrics:
 # Fallback: If config missing, defaults to 300 seconds
 block_duration_sec: 300
 
+# BlockEvaluator settings
+block_evaluator:
+  # Startup delay in seconds before first evaluation (allows logs to accumulate)
+  startup_delay_sec: 300  # 5 minutes default
+
 # Heuristic rule thresholds for context detection
 # Used by: ContextDetector.detect_context() decision tree
 # Purpose: FALLBACK when ML model unavailable or low-confidence

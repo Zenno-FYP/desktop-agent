@@ -285,7 +285,7 @@ class DesktopAgent:
                             self.current_session = ActivitySession(
                                 self.current_app, window_title,
                                 idle_threshold_sec=self.idle_threshold_sec,
-                                click_debounce_ms=self.click_debounce_ms,
+                                metrics=self.metrics,
                                 config=self.config,
                             )
                 

@@ -22,7 +22,7 @@ class BlockEvaluator:
     7. Retroactively updates all logs in the block with context_state + confidence_score
     """
     
-    def __init__(self, db, context_detector, config=None, block_duration_sec: int = None, use_ml: bool = True):
+    def __init__(self, db, context_detector, config=None, block_duration_sec: int = None, use_ml: bool = True, startup_delay_sec: int = None):
         """Initialize the BlockEvaluator.
         
         Args:
@@ -33,6 +33,8 @@ class BlockEvaluator:
                                Falls back to default 300 seconds if not specified in config
             use_ml: Whether to use ML model (default: True). Falls back to heuristic if model unavailable
                     Overrides config['ml_enabled'] if explicitly set to False
+            startup_delay_sec: Delay in seconds before first evaluation. If None, reads from config.
+                              Falls back to default 300 seconds if not specified in config
         """
         self.db = db
         self.context_detector = context_detector
@@ -44,8 +46,17 @@ class BlockEvaluator:
         else:
             self.block_duration_sec = block_duration_sec or 300
         
+        # Read startup_delay_sec: parameter > config > default 300 (5 min)
+        if startup_delay_sec is not None:
+            self.startup_delay_sec = startup_delay_sec
+        elif config:
+            self.startup_delay_sec = config.get('block_evaluator.startup_delay_sec', 300)
+        else:
+            self.startup_delay_sec = 300
+        
         self.thread = None
         self.running = False
+        self.first_evaluation_done = False
         self.ml_predictor = None
         self.use_ml = use_ml
         self.ml_available = False
@@ -160,6 +171,12 @@ class BlockEvaluator:
         Phase 2 Hardening: Align to exact block boundaries instead of sleeping for a fixed
         duration. This prevents heartbeat drift and makes aggregation scheduling predictable.
         """
+        # Wait for startup delay before first evaluation
+        if not self.first_evaluation_done and self.startup_delay_sec > 0:
+            self.logger.info("Waiting %d seconds before first block evaluation", self.startup_delay_sec)
+            time.sleep(self.startup_delay_sec)
+            self.first_evaluation_done = True
+        
         while self.running:
             try:
                 # Compute seconds until next block boundary
