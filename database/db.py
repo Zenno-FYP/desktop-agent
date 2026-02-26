@@ -203,13 +203,15 @@ class Database:
         return True
     
     def query_logs(self, start_time: str, end_time: str, 
-                   where_context_is_null: bool = False) -> list:
+                   where_context_is_null: bool = False, query_by_end_time: bool = True) -> list:
         """Query activity logs within a time range.
         
         Args:
             start_time: ISO format start time (e.g., "2026-02-24T14:05:00")
             end_time: ISO format end time
             where_context_is_null: If True, only return logs with context_state IS NULL
+            query_by_end_time: If True (default), query using end_time (catches long sessions).
+                              If False, query using start_time (legacy behavior).
         
         Returns:
             List of log dictionaries from the query
@@ -217,10 +219,20 @@ class Database:
         if not self.conn:
             raise RuntimeError("Database not connected. Call connect() first.")
         
-        query = """
-            SELECT * FROM raw_activity_logs 
-            WHERE start_time >= ? AND start_time < ?
-        """
+        # Phase 2 Hardening: Query by end_time to catch sessions that start before the block
+        # but end within it (prevents "never-tagged" long sessions)
+        if query_by_end_time:
+            query = """
+                SELECT * FROM raw_activity_logs 
+                WHERE end_time >= ? AND end_time < ?
+            """
+        else:
+            # Legacy: query by start_time
+            query = """
+                SELECT * FROM raw_activity_logs 
+                WHERE start_time >= ? AND start_time < ?
+            """
+        
         params = [start_time, end_time]
         
         if where_context_is_null:

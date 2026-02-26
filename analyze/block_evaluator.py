@@ -126,10 +126,21 @@ class BlockEvaluator:
         print(f"[BlockEvaluator] Stopped background thread")
     
     def _run_loop(self) -> None:
-        """Main loop: wake every 5 minutes and evaluate the last block."""
+        """Main loop: wake at wall-clock boundaries (e.g., 2:00, 2:05, 2:10) and evaluate.
+        
+        Phase 2 Hardening: Align to exact block boundaries instead of sleeping for a fixed
+        duration. This prevents heartbeat drift and makes aggregation scheduling predictable.
+        """
         while self.running:
             try:
-                time.sleep(self.block_duration_sec)
+                # Compute seconds until next block boundary
+                now = datetime.utcnow()
+                seconds_since_epoch = now.timestamp()
+                seconds_until_next_boundary = self.block_duration_sec - (int(seconds_since_epoch) % self.block_duration_sec)
+                
+                # Sleep until next boundary (max sleep_duration is block_duration_sec)
+                time.sleep(seconds_until_next_boundary)
+                
                 self.evaluate_block()
             except Exception as e:
                 print(f"[BlockEvaluator] Error in evaluation loop: {e}")
@@ -142,16 +153,23 @@ class BlockEvaluator:
         Queries all NULL-context logs from the last 5 minutes,
         aggregates their metrics, determines context state using ML,
         and retroactively tags them all.
+        
+        Phase 2 Hardening Improvements:
+        - Queries by end_time (not start_time) to catch long sessions that span blocks
+        - Runs at wall-clock boundaries (via _run_loop) for stable, predictable scheduling
         """
         now = datetime.utcnow()  # Use UTC to match agent's logging
         five_mins_ago = now - timedelta(seconds=self.block_duration_sec)
         
         try:
-            # Query unevaluated logs from last 5-minute block
+            # Query unevaluated logs from last 5-minute block.
+            # Phase 2 Hardening: query_by_end_time=True (default) ensures we catch sessions
+            # that started before the block but ended within it (prevents "never-tagged" logs).
             logs = self.db.query_logs(
                 start_time=five_mins_ago.isoformat(),
                 end_time=now.isoformat(),
-                where_context_is_null=True
+                where_context_is_null=True,
+                query_by_end_time=True
             )
             
             if not logs:
