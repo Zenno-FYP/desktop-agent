@@ -122,6 +122,18 @@ class Database:
         )
         self.conn.commit()
         
+        # Initialize special __unassigned__ project (for distracted/unattributed time tracking)
+        # This allows daily_project_context to record distracted sessions without violating FK constraints
+        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        self.conn.execute(
+            """
+            INSERT OR IGNORE INTO projects (project_name, project_path, first_seen_at, last_active_at, needs_sync)
+            VALUES (?, NULL, ?, ?, 0)
+            """,
+            ("__unassigned__", now, now)
+        )
+        self.conn.commit()
+        
         # Phase 4: Create daily_project_languages table
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS daily_project_languages (

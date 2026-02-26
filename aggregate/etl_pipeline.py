@@ -50,6 +50,9 @@ class ETLPipeline:
             self.app_name_mapping = {}
             self.language_to_skill_mapping = {}
         
+        # Build distraction apps list (default hardcoded + custom from config)
+        self.distraction_apps = self._build_distraction_apps_list(config)
+        
         # Initialize aggregators
         from aggregate.project_aggregator import ProjectAggregator
         from aggregate.app_aggregator import AppAggregator
@@ -66,6 +69,29 @@ class ETLPipeline:
             ContextAggregator(),
             BehaviorAggregator(),
         ]
+    
+    def _build_distraction_apps_list(self, config):
+        """Build a list of distraction apps from config (main list + custom additions).
+        
+        Returns:
+            Set of lowercase app names to treat as distractions
+        """
+        distraction_apps = set()
+        
+        if config:
+            app_cat = config.get('app_categorization', {})
+            
+            # Read main distraction apps list from config
+            main_list = app_cat.get('distraction_apps', [])
+            if main_list:
+                distraction_apps.update({app.lower() for app in main_list})
+            
+            # Add custom distraction apps from config
+            custom = app_cat.get('custom_distraction_apps', [])
+            if custom:
+                distraction_apps.update({app.lower() for app in custom})
+        
+        return distraction_apps
 
     def run(self):
         """Execute the full ETL pipeline.
@@ -163,11 +189,15 @@ class ETLPipeline:
             end_local = end_utc + timedelta(hours=self.local_tz_offset)
 
             # ==================== BLACKLIST CHECK ====================
-            # TODO: Add blacklist app detection (Netflix, YouTube, WhatsApp, etc.)
-            is_blacklisted = False  # Placeholder
+            # Check if app is in distraction/blacklist apps
+            app_name_lower = app_name.lower() if app_name else ""
+            is_blacklisted = any(
+                dist_app in app_name_lower 
+                for dist_app in self.distraction_apps
+            )
 
             if is_blacklisted:
-                # Distracted apps → force __unassigned__ and Distracted
+                # Distraction apps → force __unassigned__ project and Distracted state
                 attributed_project = "__unassigned__"
                 context_state = "Distracted"
                 sticky_project = None  # Clear sticky on distraction

@@ -58,7 +58,45 @@ heuristics:
 app_categorization:
   enabled: true              # Enable/disable app categorization
   
-  # Custom distraction apps (add to default list)
+  # Distraction/blacklist apps (social media, entertainment, messaging)
+  # Any app matching these substrings will:
+  # - Be marked as "Distracted" context state
+  # - Be attributed to __unassigned__ project (not real work projects)
+  # - Clear sticky project state
+  distraction_apps:
+    - discord
+    - discord.exe
+    - telegram
+    - telegram.exe
+    - whatsapp
+    - whatsapp.exe
+    - twitter
+    - x.exe
+    - instagram
+    - instagram.exe
+    - tiktok
+    - tiktok.exe
+    - youtube
+    - youtube.exe
+    - facebook
+    - facebook.exe
+    - reddit
+    - reddit.exe
+    - twitch
+    - twitch.exe
+    - spotify
+    - spotify.exe
+    - netflix
+    - netflix.exe
+    - hulu
+    - hulu.exe
+    - pinterest
+    - pinterest.exe
+    - snapchat
+    - snapchat.exe
+    - messenger
+  
+  # Custom distraction apps (additional apps to add to the list above)
   # Format: app names to monitor as distractions
   custom_distraction_apps:
     - gaming_app
