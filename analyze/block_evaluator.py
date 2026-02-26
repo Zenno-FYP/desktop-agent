@@ -4,6 +4,9 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# Phase 4: Aggregation
+from aggregate.etl_pipeline import ETLPipeline
+
 
 class BlockEvaluator:
     """Background evaluator that retroactively tags activity logs with context state.
@@ -55,6 +58,9 @@ class BlockEvaluator:
             self._init_ml()
             # Phase 3B: Initialize ESM popup handler for verification collection
             self._init_esm_popup()
+        
+        # Phase 4: Initialize ETL Pipeline (Maestro) for coordinating all aggregators
+        self.etl_pipeline = ETLPipeline(db)
     
     def _init_esm_popup(self) -> None:
         """Initialize ESM popup handler for ground-truth collection."""
@@ -199,6 +205,9 @@ class BlockEvaluator:
                     context_state=context_state,
                     confidence=confidence_score
                 )
+            
+            # Phase 4: Run ETL pipeline (Maestro coordinates all aggregations)
+            self.etl_pipeline.run()
             
             # Log the evaluation
             block_start = five_mins_ago.strftime("%H:%M")

@@ -55,16 +55,26 @@ Phase 4 aggregation assumes **every raw row eventually gets `context_state`**. B
 ## 1) Aggregated Database Schema (Dashboard Tier)
 These tables live in the same local SQLite DB.
 
-### 1.1 `projects` (Metadata Hub)
+### 1.1 `projects` (Metadata Hub) ✅ IMPLEMENTED
 Purpose: registry of observed projects.
 
-Recommended schema:
+**Status: COMPLETE**
+- ✅ Schema created in `database/db.py`
+- ✅ Helper methods implemented:
+  - `upsert_project(project_name, project_path)` — INSERT or UPDATE last_active_at
+  - `update_project_last_active(project_name, timestamp)` — UPDATE last_active_at only
+  - `get_project(project_name)` — Query single project
+  - `get_all_projects(needs_sync=None)` — Query all projects with filter
+- ✅ ProjectAggregator created in `aggregate/project_aggregator.py`
+- ✅ Integrated into `BlockEvaluator.evaluate_block()` → calls `project_aggregator.aggregate()` after ML tagging
+
+**Implementation Details**
 ```sql
 CREATE TABLE IF NOT EXISTS projects (
   project_name TEXT PRIMARY KEY,
   project_path TEXT,                 -- local-only (never synced)
-  first_seen_at TEXT NOT NULL,       -- UTC ISO
-  last_active_at TEXT NOT NULL,      -- UTC ISO
+  first_seen_at TEXT NOT NULL,       -- UTC ISO (set on first upsert)
+  last_active_at TEXT NOT NULL,      -- UTC ISO (updated on each aggregation)
   needs_sync INTEGER NOT NULL DEFAULT 1
 );
 
@@ -72,9 +82,28 @@ CREATE INDEX IF NOT EXISTS idx_projects_needs_sync
   ON projects(needs_sync);
 ```
 
-Notes
+**Data Flow (End-to-End)**
+1. Phase 1 (Monitor) collects raw logs with `project_name` and `project_path`
+2. Phase 2 (BlockEvaluator) tags logs retroactively with `context_state IS NOT NULL`
+3. Phase 4 (ProjectAggregator) extracts unique projects:
+   ```python
+   SELECT DISTINCT project_name, project_path
+   FROM raw_activity_logs
+   WHERE is_aggregated = 0 
+     AND context_state IS NOT NULL
+     AND project_name IS NOT NULL
+     AND project_path IS NOT NULL
+   ```
+4. For each project: calls `db.upsert_project(project_name, project_path)`
+5. UPSERT logic:
+   - If new: INSERT with `first_seen_at = now`, `last_active_at = now`, `needs_sync = 1`
+   - If exists: UPDATE `last_active_at = now`, `needs_sync = 1` (preserves `first_seen_at`)
+6. Projects table stays in sync, updated every 5 minutes after block evaluation
+
+**Notes**
 - `project_path` exists to support LOC scanning. The **sync worker must omit it**.
 - If you ever rename projects, treat it as a new `project_name` (simplest, safe).
+- `needs_sync = 1` signals cloud sync worker to include this project in next sync batch.
 
 ### 1.2 `daily_project_languages` (Syntax Tracker)
 Purpose: exact languages used per day.
@@ -171,19 +200,32 @@ ALTER TABLE raw_activity_logs ADD COLUMN aggregation_version INTEGER NOT NULL DE
 Indexes (important for performance):
 ```sql
 CREATE INDEX IF NOT EXISTS idx_raw_agg_pending
-  ON raw_activity_logs(is_aggregated, start_time);
+  ON raw_activity_logs(is_aggregated, end_time);
 
-CREATE INDEX IF NOT EXISTS idx_raw_start_time
-  ON raw_activity_logs(start_time);
+CREATE INDEX IF NOT EXISTS idx_raw_end_time
+  ON raw_activity_logs(end_time);
 ```
+
+**Note:** Indexes use `end_time` (not `start_time`) to match Phase 2 Hardening query optimization (section 0.5.1). The aggregator queries by `end_time` to catch long sessions spanning multiple blocks.
 
 ---
 
 ## 2) Aggregation Flow (ETL Pipeline)
 Aggregator runs periodically (every ~5 minutes) and/or immediately after each block evaluation cycle.
 
-### 2.1 Extract (Read raw rows)
-Query:
+**Architecture note:** Each table has its own dedicated aggregator module for separation of concerns.
+
+### 2.0 Project Aggregation ✅ IMPLEMENTED
+**Status: COMPLETE** (see section 1.1 for full details)
+
+Module: `aggregate/project_aggregator.py`
+Class: `ProjectAggregator`
+Method: `aggregate()`
+
+Triggered by: `BlockEvaluator.evaluate_block()` immediately after ML tagging
+
+### 2.1 Extract (Read raw rows) — Example: Languages
+For language aggregation, query:
 - `is_aggregated = 0`
 - `context_state IS NOT NULL` (to avoid aggregating before Phase 2 tagging)
 - ORDER BY `start_time ASC`
@@ -194,8 +236,11 @@ SELECT *
 FROM raw_activity_logs
 WHERE is_aggregated = 0
   AND context_state IS NOT NULL
+  AND detected_language IS NOT NULL
 ORDER BY start_time ASC;
 ```
+
+**Note:** Project extraction (section 2.0) uses a simpler DISTINCT query since it only needs `(project_name, project_path)` pairs.
 
 ### 2.2 Transform (Sticky Project + normalization)
 Iterate logs chronologically and maintain these state variables:
@@ -423,11 +468,31 @@ Suggested tests (fast, deterministic):
 ---
 
 ## 8) Implementation Checklist (when you’re ready to code)
-1) Add migrations in `database/db.py`:
-   - create dashboard-tier tables
-   - add `is_aggregated` (+ optional fields) to `raw_activity_logs`
-   - create indexes
-2) Implement `aggregate/aggregator.py`
-3) Wire aggregator thread into `agent.py` (or call it from `BlockEvaluator`)
-4) Add LOC scanner worker
-5) Add sync worker worker + payload serializer
+### ✅ COMPLETED
+1. ✅ Add `projects` table to `database/db.py`
+   - Schema with `project_name` (PK), `project_path`, `first_seen_at`, `last_active_at`, `needs_sync`
+   - Index on `needs_sync`
+2. ✅ Add helper methods for projects in `database/db.py`
+   - `upsert_project(project_name, project_path)`
+   - `update_project_last_active(project_name, timestamp)`
+   - `get_project(project_name)`
+   - `get_all_projects(needs_sync=None)`
+3. ✅ Implement `ProjectAggregator` in `aggregate/project_aggregator.py`
+   - `aggregate()` method that extracts unique projects from tagged logs
+   - Calls `db.upsert_project()` for each distinct project
+4. ✅ Integrate ProjectAggregator into `BlockEvaluator.evaluate_block()`
+   - Called immediately after ML tagging (after `db.update_logs_context()`)
+   - Ensures projects table stays in sync every 5 minutes
+
+### ⏳ IN PROGRESS (Next Steps)
+5. ⏳ Implement `daily_project_languages` table schema + aggregator
+6. ⏳ Implement `daily_project_skills` table schema + aggregator
+7. ⏳ Implement `daily_project_apps` table schema + aggregator
+8. ⏳ Implement `daily_project_context` table schema + aggregator
+9. ⏳ Implement `project_loc_snapshots` table schema + aggregator
+
+### ❌ NOT STARTED (Future Work)
+10. Implement LOC scanner worker
+11. Implement sync worker + payload serializer
+12. Add retention policy for raw logs (optional)
+13. Implement verified label rebuild (Strategy B)
