@@ -4,7 +4,7 @@ Zenno Desktop Agent - Entry Point (Phase 1: Core Activity Detection)
 import time
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from config.config import Config
@@ -70,6 +70,12 @@ class ActivitySession:
         start_dt = datetime.fromisoformat(self.start_time)
         end_dt = datetime.fromisoformat(end_time)
         duration_sec = int((end_dt - start_dt).total_seconds())
+        # Ensure minimum duration of 1 second to avoid validation errors
+        if duration_sec <= 0:
+            duration_sec = 1
+            # Adjust end_time to be 1 second after start_time
+            end_dt = start_dt + timedelta(seconds=1)
+            end_time = end_dt.isoformat()
         
         # Get behavioral metrics
         metrics = self.metrics.get_metrics()
@@ -180,10 +186,9 @@ class DesktopAgent:
         self.block_evaluator = BlockEvaluator(self.db, self.context_detector, config=self.config, block_duration_sec=block_duration_sec)
         self.block_evaluator.start()
         
-        # Initialize Phase 4: LOC Scanner (triggered on idle time)
+        # Initialize Phase 4: LOC Scanner (triggered hourly)
         self.loc_scanner = LOCScanner(self.db, config=self.config)
         self.loc_scan_interval_sec = self.config.get("loc_scanner.scan_interval_sec", 3600)  # 1 hour default
-        self.loc_scan_idle_ratio_threshold = self.config.get("loc_scanner.idle_ratio_threshold", 0.3)
         self.last_loc_scan_time = 0
         
         # Session tracking
@@ -445,35 +450,24 @@ class DesktopAgent:
             self.logger.exception("[Error] Failed to flush session")
 
     def _check_idle_and_scan_loc(self):
-        """Check if user is idle and trigger LOC scanning periodically.
+        """Trigger LOC scanning periodically (every hour).
         
-        LOC scanning is CPU-intensive, so only run when:
-        1. User is idle (no activity detected)
-        2. Enough time has passed since last scan (default 1 hour)
+        Scans all projects that have been active since their last scan.
+        Runs on a timer basis, not dependent on user idle status.
         """
         current_time = time.time()
         
-        # Check if ready to scan based on interval
+        # Check if enough time has passed since last scan
         if current_time - self.last_loc_scan_time < self.loc_scan_interval_sec:
-            return
+            return  # Not yet, skip
         
-        # Check if user is currently idle
-        if not self.current_session:
-            return
-        
-        idle_metrics = self.current_session.idle_detector.get_idle_metrics()
-        idle_duration = idle_metrics.get('idle_duration_sec', 0)
-        session_duration = int((datetime.utcnow() - datetime.fromisoformat(self.current_session.start_time)).total_seconds())
-        
-        # Only scan if idle for at least configured ratio of the current session
-        if idle_duration > session_duration * float(self.loc_scan_idle_ratio_threshold):
-            try:
-                self.logger.info("[LOCScanner] User idle, starting background LOC scan...")
-                self.loc_scanner.scan_all_projects()
-                self.last_loc_scan_time = current_time
-                self.logger.info("[LOCScanner] Completed LOC scan")
-            except Exception as e:
-                self.logger.exception("[Error] LOC scanning failed")
+        try:
+            self.logger.info("[LOCScanner] Starting background LOC scan...")
+            self.loc_scanner.scan_all_projects()
+            self.last_loc_scan_time = current_time
+            self.logger.info("[LOCScanner] Completed LOC scan")
+        except Exception as e:
+            self.logger.exception("[Error] LOC scanning failed")
 
     def _shutdown(self):
         """Graceful shutdown."""

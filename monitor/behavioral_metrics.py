@@ -74,11 +74,20 @@ class BehavioralMetrics:
         """Handle keyboard press event."""
         try:
             with self.lock:
-                # Get key name
+                # Get key name - handle both Key and KeyCode objects from pynput
                 try:
-                    key_name = key.char.lower() if hasattr(key, 'char') else key.name.lower()
-                except AttributeError:
-                    key_name = key.name.lower()
+                    # Try char attribute first (regular Keys)
+                    if hasattr(key, 'char') and key.char is not None:
+                        key_name = key.char.lower()
+                    # Try name attribute (some Key objects)
+                    elif hasattr(key, 'name') and key.name is not None:
+                        key_name = key.name.lower()
+                    # Fallback: convert to string and parse (for KeyCode objects)
+                    else:
+                        key_name = str(key).replace("Key.", "").replace("KeyCode(", "").replace(")", "").lower()
+                except (AttributeError, TypeError):
+                    # Last resort: convert to string if all else fails
+                    key_name = str(key).replace("Key.", "").replace("KeyCode(", "").replace(")", "").lower()
                 
                 # Skip modifier keys
                 if key_name not in self.modifier_keys:
