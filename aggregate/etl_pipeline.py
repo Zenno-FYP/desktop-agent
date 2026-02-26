@@ -37,6 +37,7 @@ class ETLPipeline:
         from aggregate.language_aggregator import LanguageAggregator
         from aggregate.skill_aggregator import SkillAggregator
         from aggregate.context_aggregator import ContextAggregator
+        from aggregate.behavior_aggregator import BehaviorAggregator
         
         self.aggregators = [
             ProjectAggregator(),
@@ -44,6 +45,7 @@ class ETLPipeline:
             LanguageAggregator(),
             SkillAggregator(),
             ContextAggregator(),
+            BehaviorAggregator(),
         ]
 
     def run(self):
@@ -78,12 +80,14 @@ class ETLPipeline:
         
         Returns:
             List of tuples: (log_id, start_time, end_time, app_name, project_name, project_path,
-                           detected_language, context_state, duration_sec)
+                           detected_language, context_state, duration_sec, typing_intensity,
+                           mouse_click_rate, mouse_scroll_events, idle_duration_sec)
         """
         cursor = self.db.conn.execute(
             """
             SELECT log_id, start_time, end_time, app_name, project_name, project_path,
-                   detected_language, context_state, duration_sec
+                   detected_language, context_state, duration_sec, typing_intensity,
+                   mouse_click_rate, mouse_scroll_events, idle_duration_sec
             FROM raw_activity_logs
             WHERE is_aggregated = 0
               AND context_state IS NOT NULL
@@ -134,6 +138,10 @@ class ETLPipeline:
             detected_language,
             context_state,
             duration_sec,
+            typing_intensity,
+            mouse_click_rate,
+            mouse_scroll_events,
+            idle_duration_sec,
         ) in raw_logs:
             # Parse timestamps (UTC)
             start_utc = datetime.fromisoformat(start_time_iso)
@@ -201,6 +209,10 @@ class ETLPipeline:
                     "context_state": context_state,
                     "duration_sec": seg_duration,
                     "end_time_utc": seg_end_utc.strftime("%Y-%m-%d %H:%M:%S"),
+                    "typing_intensity": typing_intensity,
+                    "mouse_click_rate": mouse_click_rate,
+                    "mouse_scroll_events": mouse_scroll_events,
+                    "idle_duration_sec": idle_duration_sec,
                 })
 
         return transformed

@@ -170,6 +170,25 @@ class Database:
         )
         self.conn.commit()
 
+        # Phase 4: Create daily_project_behavior table (Physical effort metrics)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_project_behavior (
+                date TEXT NOT NULL,
+                project_name TEXT NOT NULL,
+                total_keystrokes INTEGER NOT NULL DEFAULT 0,
+                total_mouse_clicks INTEGER NOT NULL DEFAULT 0,
+                total_scroll_events INTEGER NOT NULL DEFAULT 0,
+                total_idle_sec INTEGER NOT NULL DEFAULT 0,
+                needs_sync INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (date, project_name),
+                FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dpb_needs_sync ON daily_project_behavior(needs_sync)"
+        )
+        self.conn.commit()
+
 
 
     def start_session(self, app_name: str, window_title: str = "") -> int:
@@ -875,6 +894,99 @@ class Database:
             with self.conn:
                 self.conn.execute('''
                     UPDATE daily_project_context
+                    SET needs_sync = 0
+                    WHERE date = ? AND project_name = ?
+                ''', (date, project_name))
+
+    # ==================== DAILY PROJECT BEHAVIOR ====================
+
+    def get_daily_behavior_by_date(self, date, needs_sync=None):
+        """Get all behavior metrics for a given date, optionally filtered by sync status.
+        
+        Args:
+            date: YYYY-MM-DD (local date)
+            needs_sync: If True/False, filter by sync status. If None, return all.
+            
+        Returns:
+            List of dicts with keys: date, project_name, total_keystrokes, total_mouse_clicks,
+                                     total_scroll_events, total_idle_sec, needs_sync
+        """
+        if needs_sync is None:
+            cursor = self.conn.execute('''
+                SELECT date, project_name, total_keystrokes, total_mouse_clicks, 
+                       total_scroll_events, total_idle_sec, needs_sync
+                FROM daily_project_behavior
+                WHERE date = ?
+                ORDER BY project_name
+            ''', (date,))
+        else:
+            cursor = self.conn.execute('''
+                SELECT date, project_name, total_keystrokes, total_mouse_clicks, 
+                       total_scroll_events, total_idle_sec, needs_sync
+                FROM daily_project_behavior
+                WHERE date = ? AND needs_sync = ?
+                ORDER BY project_name
+            ''', (date, 1 if needs_sync else 0))
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'date': row[0],
+                'project_name': row[1],
+                'total_keystrokes': row[2],
+                'total_mouse_clicks': row[3],
+                'total_scroll_events': row[4],
+                'total_idle_sec': row[5],
+                'needs_sync': row[6],
+            })
+        return result
+
+    def get_daily_behavior_pending_sync(self):
+        """Get all behavior rows pending cloud sync (needs_sync = 1).
+        
+        Returns:
+            List of dicts with keys: date, project_name, total_keystrokes, total_mouse_clicks,
+                                     total_scroll_events, total_idle_sec, needs_sync
+        """
+        cursor = self.conn.execute('''
+            SELECT date, project_name, total_keystrokes, total_mouse_clicks, 
+                   total_scroll_events, total_idle_sec, needs_sync
+            FROM daily_project_behavior
+            WHERE needs_sync = 1
+            ORDER BY date DESC, project_name
+        ''')
+        
+        result = []
+        for row in cursor.fetchall():
+            result.append({
+                'date': row[0],
+                'project_name': row[1],
+                'total_keystrokes': row[2],
+                'total_mouse_clicks': row[3],
+                'total_scroll_events': row[4],
+                'total_idle_sec': row[5],
+                'needs_sync': row[6],
+            })
+        return result
+
+    def mark_daily_behavior_synced(self, date, project_name=None):
+        """Mark behavior rows as synced (needs_sync = 0).
+        
+        Args:
+            date: YYYY-MM-DD (local date) to mark synced
+            project_name: Optional project filter. If None, marks all rows for that date.
+        """
+        if project_name is None:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE daily_project_behavior
+                    SET needs_sync = 0
+                    WHERE date = ?
+                ''', (date,))
+        else:
+            with self.conn:
+                self.conn.execute('''
+                    UPDATE daily_project_behavior
                     SET needs_sync = 0
                     WHERE date = ? AND project_name = ?
                 ''', (date, project_name))
