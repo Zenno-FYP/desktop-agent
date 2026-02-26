@@ -2,13 +2,8 @@
 Zenno Desktop Agent - Entry Point (Phase 1: Core Activity Detection)
 """
 import time
-import sys
-from pathlib import Path
 from datetime import datetime
 from typing import Optional
-
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
 
 from config.config import Config
 from database.db import Database
@@ -24,7 +19,7 @@ class ActivitySession:
     """Track a single application/window session with all behavioral data."""
 
     def __init__(self, app_name: str, window_title: str, pid: Optional[int] = None, 
-                 idle_threshold_sec: int = 10, click_debounce_ms: int = 50):
+                 idle_threshold_sec: int = 10, click_debounce_ms: int = 50, config=None):
         """Initialize new activity session.
         
         Args:
@@ -42,7 +37,7 @@ class ActivitySession:
         # Initialize behavioral tracking with config values
         self.metrics = BehavioralMetrics(click_debounce_ms=click_debounce_ms)
         self.idle_detector = IdleDetector(idle_threshold_sec=idle_threshold_sec)
-        self.project_detector = ProjectDetector()
+        self.project_detector = ProjectDetector(config=config)
         
         # Track file changes (for tab switching)
         project, file = self.project_detector.detect_project(app_name, window_title)
@@ -146,9 +141,17 @@ class DesktopAgent:
         self.idle_threshold_sec = self.config.get("idle_threshold_sec", 10)
         self.click_debounce_ms = self.config.get("behavioral_metrics.click_debounce_ms", 50)
         self.db_path = self.config.get("db.path", "./agent.db")
+        db_check_same_thread = self.config.get("db.check_same_thread", False)
+        db_timeout = self.config.get("db.timeout", 10.0)
+        db_journal_mode = self.config.get("db.journal_mode", "WAL")
         
         # Initialize database
-        self.db = Database(self.db_path)
+        self.db = Database(
+            self.db_path,
+            check_same_thread=db_check_same_thread,
+            timeout=db_timeout,
+            journal_mode=db_journal_mode,
+        )
         self.db.connect()
         self.db.create_tables()
         print(f"[Agent] Database initialized: {self.db_path}")
@@ -182,7 +185,7 @@ class DesktopAgent:
                     if app_name:
                         self.current_session = ActivitySession(
                             app_name, window_title, pid, 
-                            self.idle_threshold_sec, self.click_debounce_ms
+                            self.idle_threshold_sec, self.click_debounce_ms, config=self.config
                         )
                         self.current_app = app_name
                 
@@ -195,7 +198,7 @@ class DesktopAgent:
                         # Start new file session (same app, different file)
                         self.current_session = ActivitySession(
                             app_name, window_title, pid,
-                            self.idle_threshold_sec, self.click_debounce_ms
+                            self.idle_threshold_sec, self.click_debounce_ms, config=self.config
                         )
                         new_file = self.current_session.current_file
                         print(f"[Tab Switch] {old_file} -> {new_file}")
@@ -218,7 +221,8 @@ class DesktopAgent:
                             self.current_session = ActivitySession(
                                 self.current_app, window_title,
                                 idle_threshold_sec=self.idle_threshold_sec,
-                                click_debounce_ms=self.click_debounce_ms
+                                click_debounce_ms=self.click_debounce_ms,
+                                config=self.config,
                             )
                 
                 time.sleep(self.sample_interval)

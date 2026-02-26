@@ -7,7 +7,14 @@ from datetime import datetime
 class Database:
     """SQLite connection and schema management."""
 
-    def __init__(self, db_path: str):
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        check_same_thread: bool = False,
+        timeout: float = 10.0,
+        journal_mode: str = "WAL",
+    ):
         """Initialize database connection.
         
         Args:
@@ -16,16 +23,29 @@ class Database:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = None
+        self.check_same_thread = bool(check_same_thread)
+        self.timeout = float(timeout)
+        self.journal_mode = journal_mode
+
+    @staticmethod
+    def _sanitize_journal_mode(journal_mode: str) -> str:
+        """Return a safe SQLite journal_mode value."""
+        if not journal_mode:
+            return "WAL"
+        candidate = str(journal_mode).strip().upper()
+        allowed = {"WAL", "DELETE", "TRUNCATE", "PERSIST", "MEMORY", "OFF"}
+        return candidate if candidate in allowed else "WAL"
 
     def connect(self):
         """Open connection and enable WAL mode."""
         self.conn = sqlite3.connect(
             str(self.db_path),
-            check_same_thread=False,  # Allow use in different threads (safe with WAL mode)
-            timeout=10.0  # Wait up to 10 seconds for locks
+            check_same_thread=self.check_same_thread,
+            timeout=self.timeout,
         )
-        # Enable WAL mode for better concurrency
-        self.conn.execute("PRAGMA journal_mode=WAL")
+
+        journal_mode = self._sanitize_journal_mode(self.journal_mode)
+        self.conn.execute(f"PRAGMA journal_mode={journal_mode}")
         # Enable foreign keys
         self.conn.execute("PRAGMA foreign_keys=ON")
         return self.conn

@@ -15,6 +15,20 @@ Non-goals (for Phase 4 MVP)
 
 ---
 
+## Config (YAML-driven) ✅ IMPLEMENTED
+Phase 4 and related subsystems now read tunables from `config/config.yaml`.
+
+Key Phase 4 keys:
+- `etl_pipeline.local_tz_offset_hours` — local-date bucketing + midnight splitting
+- `etl_pipeline.sticky_project_ttl_sec` — sticky project inheritance TTL
+- `etl_pipeline.app_name_mapping` — `.exe` → friendly app names
+- `etl_pipeline.language_to_skill_mapping` — language → skill category
+- `loc_scanner.language_extensions`, `loc_scanner.skip_directories`
+- `db.path`, `db.check_same_thread`, `db.timeout`, `db.journal_mode`
+
+Key Phase 1 key:
+- `project_detector.*` — project markers, watch dirs, language extensions, and safe search limits
+
 ## 0) Current Inputs (Confirmed)
 Your current table is created in `database/db.py` as `raw_activity_logs` with (key fields):
 - `start_time`, `end_time` (ISO string, UTC)
@@ -208,6 +222,27 @@ CREATE INDEX IF NOT EXISTS idx_raw_end_time
 
 **Note:** Indexes use `end_time` (not `start_time`) to match Phase 2 Hardening query optimization (section 0.5.1). The aggregator queries by `end_time` to catch long sessions spanning multiple blocks.
 
+### 1.8 `daily_project_behavior` (Effort Tracker) ✅ IMPLEMENTED
+Purpose: Daily totals of physical effort signals (derived from per-session KPM/CPM).
+
+```sql
+CREATE TABLE IF NOT EXISTS daily_project_behavior (
+  date TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  total_keystrokes INTEGER NOT NULL DEFAULT 0,
+  total_mouse_clicks INTEGER NOT NULL DEFAULT 0,
+  total_scroll_events INTEGER NOT NULL DEFAULT 0,
+  total_idle_sec INTEGER NOT NULL DEFAULT 0,
+  needs_sync INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (date, project_name),
+  FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
+);
+```
+
+Implementation notes:
+- Source columns live in `raw_activity_logs`: `typing_intensity` (KPM), `mouse_click_rate` (CPM), `mouse_scroll_events`, `idle_duration_sec`.
+- Aggregation converts rates into absolute totals using per-row duration.
+
 ---
 
 ## 2) Aggregation Flow (ETL Pipeline)
@@ -215,14 +250,37 @@ Aggregator runs periodically (every ~5 minutes) and/or immediately after each bl
 
 **Architecture note:** Each table has its own dedicated aggregator module for separation of concerns.
 
-### 2.0 Project Aggregation ✅ IMPLEMENTED
-**Status: COMPLETE** (see section 1.1 for full details)
+### 2.0 Maestro ETL Pipeline ✅ IMPLEMENTED
+**Status: COMPLETE**
 
-Module: `aggregate/project_aggregator.py`
-Class: `ProjectAggregator`
-Method: `aggregate()`
+Module: `aggregate/etl_pipeline.py`
+Class: `ETLPipeline`
+Method: `run()`
 
-Triggered by: `BlockEvaluator.evaluate_block()` immediately after ML tagging
+Triggered by: `BlockEvaluator.evaluate_block()` immediately after ML tagging.
+
+Maestro responsibilities:
+1) **Extract** pending raw rows (`is_aggregated = 0` and `context_state IS NOT NULL`)
+2) **Transform once**
+  - Sticky project inheritance (TTL from config)
+  - Midnight splitting using **local date bucketing** (`etl_pipeline.local_tz_offset_hours`)
+  - App name normalization (`etl_pipeline.app_name_mapping`)
+  - Carries per-segment `end_time_utc` for accurate `projects.last_active_at`
+3) **Delegate** to specialized aggregators (each returns UPSERT SQL)
+4) **Load atomically** (one transaction), then marks raw rows aggregated
+
+Specialized aggregators (implemented):
+- `ProjectAggregator` → `projects`
+- `AppAggregator` → `daily_project_apps`
+- `LanguageAggregator` → `daily_project_languages`
+- `SkillAggregator` → `daily_project_skills`
+- `ContextAggregator` → `daily_project_context`
+- `BehaviorAggregator` → `daily_project_behavior`
+
+### 2.0.1 Data integrity hardening ✅ IMPLEMENTED
+- **FK fix:** downstream daily aggregators skip `project_name == "__unassigned__"` to avoid foreign key failures (since `projects` excludes it).
+- **Path Superiority Rule:** project path upserts prevent downgrading an absolute path to a relative/shorter one (Python-layer preference + SQL `CASE` protection).
+- **Latest timestamp wins:** `projects.last_active_at` updates using latest per-segment `end_time_utc`.
 
 ### 2.1 Extract (Read raw rows) — Example: Languages
 For language aggregation, query:

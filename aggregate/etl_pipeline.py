@@ -21,15 +21,34 @@ from collections import defaultdict
 class ETLPipeline:
     """The Maestro: orchestrates extraction, transformation, and delegation."""
 
-    def __init__(self, db, local_tz_offset=0):
+    def __init__(self, db, config=None, local_tz_offset_hours=None):
         """Initialize ETL pipeline.
         
         Args:
             db: Database instance (from database/db.py)
-            local_tz_offset: Hours offset from UTC for local date bucketing (e.g., -5 for EST)
+            config: Config instance (from config/config.py) - optional but recommended
+            local_tz_offset_hours: Hours offset from UTC for local date bucketing (e.g., -5 for EST)
+                                  If None, will be read from config under etl_pipeline.local_tz_offset_hours
         """
         self.db = db
-        self.local_tz_offset = local_tz_offset
+        self.config = config
+        if local_tz_offset_hours is None and config is not None:
+            etl_cfg = config.get("etl_pipeline", {})
+            local_tz_offset_hours = etl_cfg.get("local_tz_offset_hours", 0)
+
+        self.local_tz_offset = local_tz_offset_hours or 0
+        
+        # Read configuration
+        if config:
+            etl_cfg = config.get('etl_pipeline', {})
+            self.sticky_project_ttl_sec = etl_cfg.get('sticky_project_ttl_sec', 900)  # 15 min default
+            self.app_name_mapping = etl_cfg.get('app_name_mapping', {})
+            self.language_to_skill_mapping = etl_cfg.get('language_to_skill_mapping', {})
+        else:
+            # Fallback defaults if no config provided
+            self.sticky_project_ttl_sec = 900  # 15 minutes
+            self.app_name_mapping = {}
+            self.language_to_skill_mapping = {}
         
         # Initialize aggregators
         from aggregate.project_aggregator import ProjectAggregator
@@ -43,7 +62,7 @@ class ETLPipeline:
             ProjectAggregator(),
             AppAggregator(),
             LanguageAggregator(),
-            SkillAggregator(),
+            SkillAggregator(language_to_skill_mapping=self.language_to_skill_mapping),
             ContextAggregator(),
             BehaviorAggregator(),
         ]
@@ -113,18 +132,10 @@ class ETLPipeline:
         """
         sticky_project = None
         sticky_project_last_seen = None
-        sticky_project_ttl_sec = 15 * 60  # 15 minutes
+        sticky_project_ttl_sec = self.sticky_project_ttl_sec
 
-        # App name mapping dictionary for cleaning .exe files
-        app_mapping = {
-            "code.exe": "VS Code",
-            "chrome.exe": "Google Chrome",
-            "msedge.exe": "Microsoft Edge",
-            "windowsterminal.exe": "Terminal",
-            "pycharm64.exe": "PyCharm",
-            "studio64.exe": "Android Studio",
-            "postman.exe": "Postman"
-        }
+        # App name mapping dictionary for cleaning .exe files (from config)
+        app_mapping = self.app_name_mapping
 
         transformed = []
 
@@ -272,13 +283,10 @@ class ETLPipeline:
                         [now] + log_ids,
                     )
 
-                self.db.conn.commit()
-                
                 print(
                     f"[ETLPipeline] Processed {len(log_ids)} raw logs → {len(sql_commands)} UPSERT commands executed"
                 )
 
         except Exception as e:
             print(f"[ETLPipeline] Error executing batch: {e}")
-            self.db.conn.rollback()
             raise

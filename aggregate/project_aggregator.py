@@ -4,6 +4,7 @@ Path Superiority Rule: Absolute paths are ALWAYS superior to relative paths.
 Both Python layer (memory) and SQL layer (database) enforce this.
 """
 import os
+from datetime import datetime
 
 class ProjectAggregator:
     """Generates UPSERT commands for projects table."""
@@ -64,7 +65,7 @@ class ProjectAggregator:
         sql_commands = []
         
         for p_name, data in unique_projects.items():
-            now = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             path = data["path"]
             last_active = data["last_active"]
             

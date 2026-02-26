@@ -25,10 +25,100 @@ class ProjectDetector:
         Path.home() / 'workspace',
     ]
 
-    def __init__(self):
-        """Initialize project detector."""
+    def __init__(self, config=None):
+        """Initialize project detector.
+
+        Args:
+            config: Optional Config instance for config-driven behavior.
+        """
+        self.config = config
         self.last_detected_project = None
         self.last_detected_file = None
+
+        self.project_markers = self._get_project_markers()
+        self.watch_dirs = self._get_watch_dirs()
+        self.language_extensions = self._get_language_extensions()
+        self.lightweight_search_cfg = self._get_lightweight_search_cfg()
+
+    def _get_project_markers(self):
+        if not self.config:
+            return list(self.PROJECT_MARKERS)
+        return self.config.get("project_detector.project_markers", list(self.PROJECT_MARKERS))
+
+    def _get_watch_dirs(self):
+        raw = None
+        if self.config:
+            raw = self.config.get("project_detector.watch_dirs")
+        if not raw:
+            return list(self.WATCH_DIRS)
+
+        watch_dirs = []
+        for path_str in raw:
+            try:
+                watch_dirs.append(Path(path_str).expanduser())
+            except Exception:
+                continue
+        return watch_dirs
+
+    def _get_language_extensions(self):
+        default = {
+            '.py': 'Python',
+            '.js': 'JavaScript',
+            '.ts': 'TypeScript',
+            '.jsx': 'React',
+            '.tsx': 'React',
+            '.java': 'Java',
+            '.cpp': 'C++',
+            '.c': 'C',
+            '.cs': 'C#',
+            '.go': 'Go',
+            '.rs': 'Rust',
+            '.rb': 'Ruby',
+            '.php': 'PHP',
+            '.swift': 'Swift',
+            '.kt': 'Kotlin',
+            '.html': 'HTML',
+            '.css': 'CSS',
+            '.sql': 'SQL',
+            '.json': 'JSON',
+            '.yaml': 'YAML',
+            '.yml': 'YAML',
+            '.xml': 'XML',
+            '.md': 'Markdown',
+        }
+        if not self.config:
+            return default
+        return self.config.get("project_detector.language_extensions", default)
+
+    def _get_lightweight_search_cfg(self):
+        default = {
+            "exclude_dirs": {
+                'windows', 'program files', 'program files (x86)', 'programdata',
+                'appdata', '$recycle.bin', 'node_modules', 'vendor', 'temp', 'tmp',
+                'cache', '.git', '__pycache__', 'system volume information',
+                'users', 'recovery', 'system32', 'syswow64'
+            },
+            "max_depth": 6,
+            "time_limit_sec": 1.0,
+            "search_system_drive_last": True,
+        }
+
+        if not self.config:
+            return default
+
+        cfg = self.config.get("project_detector.lightweight_search", {}) or {}
+        exclude_dirs = cfg.get("exclude_dirs")
+        if isinstance(exclude_dirs, list):
+            exclude_dirs = {str(d).lower() for d in exclude_dirs}
+        else:
+            exclude_dirs = default["exclude_dirs"]
+
+        return {
+            "exclude_dirs": exclude_dirs,
+            "max_depth": int(cfg.get("max_depth", default["max_depth"])),
+            "time_limit_sec": float(cfg.get("time_limit_sec", default["time_limit_sec"])),
+            "search_system_drive_last": bool(cfg.get("search_system_drive_last", default["search_system_drive_last"])),
+        }
 
     def _lightweight_drive_search(self, active_file_name: str, expected_project_name: str) -> Optional[str]:
         """Strictly bounded, high-speed fallback search across drives.
@@ -46,39 +136,31 @@ class ProjectDetector:
         Returns:
             Project root path if found within limits, None otherwise
         """
-        # Exclude massive or system directories to prevent hanging
-        EXCLUDE_DIRS = {
-            'windows', 'program files', 'program files (x86)', 'programdata', 
-            'appdata', '$recycle.bin', 'node_modules', 'vendor', 'temp', 'tmp',
-            'cache', '.git', '__pycache__', 'system volume information',
-            'users', 'recovery', 'system32', 'syswow64'
-        }
-        
-        MAX_DEPTH = 6           # Search up to 6 folders deep (covers most projects)
-        TIME_LIMIT_SEC = 1.0    # ABORT if it takes longer than 1 second (PRIMARY limit)
+        exclude_dirs = self.lightweight_search_cfg["exclude_dirs"]
+        max_depth = self.lightweight_search_cfg["max_depth"]
+        time_limit_sec = self.lightweight_search_cfg["time_limit_sec"]
+        search_system_drive_last = self.lightweight_search_cfg["search_system_drive_last"]
         
         start_time = time.time()
         
-        # Get available drives, but skip C: (system) to save time
-        drives = [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\") and d != 'C']
-        # Add C: at the end if we have time later
-        if os.path.exists("C:\\"):
-            drives.append("C:\\")
+        drives = [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]
+        if search_system_drive_last:
+            drives = [d for d in drives if d.upper() != "C:\\"] + (["C:\\"] if os.path.exists("C:\\") else [])
         
         for drive in drives:
             try:
                 for root, dirs, files in os.walk(drive):
                     
                     # 1. Circuit Breaker: Enforce time limit (PRIMARY safety)
-                    if time.time() - start_time > TIME_LIMIT_SEC:
+                    if time.time() - start_time > time_limit_sec:
                         return None 
                     
                     # 2. Filter out excluded directories (modifying in-place stops os.walk from entering)
-                    dirs[:] = [d for d in dirs if d.lower() not in EXCLUDE_DIRS]
+                    dirs[:] = [d for d in dirs if d.lower() not in exclude_dirs]
                     
                     # 3. Circuit Breaker: Enforce depth limit (SECONDARY safety)
                     depth = root.count(os.sep) - drive.count(os.sep)
-                    if depth >= MAX_DEPTH:
+                    if depth >= max_depth:
                         del dirs[:]  # Don't go deeper
                         continue
                     
@@ -136,7 +218,7 @@ class ProjectDetector:
                         break
                     
                     # Check for project markers
-                    for marker in self.PROJECT_MARKERS:
+                    for marker in self.project_markers:
                         if (current / marker).exists():
                             return str(current)
                     
@@ -264,34 +346,8 @@ class ProjectDetector:
         if not active_file:
             return None
         
-        skill_map = {
-            '.py': 'Python',
-            '.js': 'JavaScript',
-            '.ts': 'TypeScript',
-            '.jsx': 'React',
-            '.tsx': 'React',
-            '.java': 'Java',
-            '.cpp': 'C++',
-            '.c': 'C',
-            '.cs': 'C#',
-            '.go': 'Go',
-            '.rs': 'Rust',
-            '.rb': 'Ruby',
-            '.php': 'PHP',
-            '.swift': 'Swift',
-            '.kt': 'Kotlin',
-            '.html': 'HTML',
-            '.css': 'CSS',
-            '.sql': 'SQL',
-            '.json': 'JSON',
-            '.yaml': 'YAML',
-            '.yml': 'YAML',
-            '.xml': 'XML',
-            '.md': 'Markdown',
-        }
-        
         file_ext = Path(active_file).suffix.lower()
-        skill = skill_map.get(file_ext)
+        skill = (self.language_extensions or {}).get(file_ext)
         
         return skill if skill else None
 
@@ -345,7 +401,7 @@ class ProjectDetector:
                 return str(sibling)
                 
             # Check safe Watch Directories ONLY
-            for base_dir in self.WATCH_DIRS:
+            for base_dir in self.watch_dirs:
                 if base_dir.exists():
                     candidate = base_dir / extracted_name
                     if candidate.exists() and candidate.is_dir():

@@ -133,13 +133,30 @@ class LOCScanner:
         ".terraform",
     }
 
-    def __init__(self, db):
+    def __init__(self, db, config=None):
         """Initialize LOC scanner.
         
         Args:
             db: Database instance (from database/db.py)
+            config: Config instance (from config/config.py) - optional but recommended
         """
         self.db = db
+        
+        # Read configuration
+        if config:
+            loc_cfg = config.get('loc_scanner', {})
+            # Convert config dict keys (with dots) to the mapping
+            ext_map = loc_cfg.get('language_extensions', {})
+            # Ensure keys have leading dots
+            self.language_extensions = {
+                (k if k.startswith('.') else f'.{k}'): v 
+                for k, v in ext_map.items()
+            }
+            self.skip_dirs = set(loc_cfg.get('skip_directories', []))
+        else:
+            # Fallback to class-level defaults if no config provided
+            self.language_extensions = self.LANGUAGE_EXTENSIONS
+            self.skip_dirs = self.SKIP_DIRS
 
     def scan_project(self, project_name):
         """Scan a single project by name and update project_loc_snapshots.
@@ -262,7 +279,7 @@ class LOCScanner:
             True if should skip, False otherwise
         """
         for part in file_path.parts:
-            if part in self.SKIP_DIRS:
+            if part in self.skip_dirs:
                 return True
         return False
 
@@ -276,7 +293,7 @@ class LOCScanner:
             Language name or None if unknown
         """
         suffix = file_path.suffix.lower()
-        return self.LANGUAGE_EXTENSIONS.get(suffix)
+        return self.language_extensions.get(suffix)
 
     def _count_lines(self, file_path):
         """Count lines of code in a file.

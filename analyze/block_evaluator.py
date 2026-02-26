@@ -60,7 +60,7 @@ class BlockEvaluator:
             self._init_esm_popup()
         
         # Phase 4: Initialize ETL Pipeline (Maestro) for coordinating all aggregators
-        self.etl_pipeline = ETLPipeline(db)
+        self.etl_pipeline = ETLPipeline(db, config=config)
     
     def _init_esm_popup(self) -> None:
         """Initialize ESM popup handler for ground-truth collection."""
