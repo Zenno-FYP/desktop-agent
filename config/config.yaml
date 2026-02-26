@@ -378,12 +378,22 @@ esm_popup:
 ## PHASE 4: Aggregation Pipeline Settings
 
 # ETL Pipeline Settings (Maestro Orchestrator)
-# Used by: Maestro ETL pipeline (aggregate/ module - ETL orchestrator)
+# Used by: 
+#   - DesktopAgent (agent.py - COLLECTION PHASE): Applies sticky project logic when flushing sessions
+#   - Maestro ETL pipeline (aggregate/ module - AGGREGATION PHASE): Currently still has sticky logic (for backward compat)
 # Purpose: Configure context aggregation behavior (timezone, project stickiness, app display names)
+# NOTE: SHIFT-LEFT IMPLEMENTATION
+#   - Sticky project logic moved to COLLECTION PHASE (agent.py)
+#   - When a browser/terminal session has no explicit project, it inherits last-detected project
+#   - This means raw_activity_logs table is CLEAN from the first second (no NULL projects)
+#   - Old aggregation-phase sticky logic can be removed in future (kept pending for now)
 # Flow:
 #   1. Raw behavioral events collected with timestamps + app + window title
-#   2. local_tz_offset_hours: Bucket events into daily sessions (midnight = session boundary)
-#   3. sticky_project_ttl_sec: When app lacks project context, inherit last-seen project if recent
+#   2. [NEW] At collection: When flushing a generic app (browser) with no project:
+#      a. Check if sticky_project_name exists in memory
+#      b. Check if it's within TTL window (15 min)
+#      c. If yes: Assign detected project to this activity; if no: leave as NULL
+#   3. local_tz_offset_hours: Bucket events into daily sessions (midnight = session boundary)
 #   4. app_name_mapping: Normalize app display names (code.exe → "VS Code") for reports
 # Fallback: If config missing, defaults: tz_offset=0 (UTC), sticky_ttl=900s, no normalization
 etl_pipeline:
@@ -393,11 +403,23 @@ etl_pipeline:
   local_tz_offset_hours: 0
 
   # Sticky project context TTL in seconds
-  # When user switches to an app without explicit project context (e.g., browser, terminal),
-  # inherit last-seen project if within this TTL window.
-  # Rationale: Prevents "lost project context" when user switches to non-IDE apps
-  # Circuit breaker: If TTL expired, project reverts to __unassigned__
-  sticky_project_ttl_sec: 900  # 15 minutes
+  # Used by: DesktopAgent._apply_sticky_project() during collection
+  # Purpose: Maintain project context across app switches (IDE → browser → IDE workflow)
+  # Implementation (Collection-Phase / Shift-Left):
+  #   When user switches to generic app (Chrome, Firefox, Terminal) with no project detected:
+  #   1. Check: Is there a sticky_project_name in memory?
+  #   2. Check: Was it seen less than TTL seconds ago?
+  #   3. Yes: Assign that project to browser activity → clean data in DB
+  #   4. No: Leave project NULL → triggers [later] distracted/unassigned logic
+  # Multitasking Example:
+  #   00:00-05:00 VS Code (Project A): sticky = "Project A"
+  #   00:05-10:00 Chrome (no project): sticky is valid → DB saved as "Project A"
+  #   00:10-15:00 PyCharm (Project B): sticky = "Project B" (overwrites)
+  #   00:15-20:00 Chrome (no project): sticky is valid → DB saved as "Project B" (NOT A!)
+  # Agent Restart: On startup, DesktopAgent._recover_sticky_project() queries the DB
+  #   to find the last non-NULL project and seeds it into memory if within TTL.
+  # Benefit: Eliminates need for Maestro to guess project context (data is clean at source)
+  sticky_project_ttl_sec: 900  # 15 minutes = 900 seconds
   
   # App name normalization mapping (executable → friendly name)
   # Used to clean up .exe filenames for display and aggregation

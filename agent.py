@@ -166,6 +166,15 @@ class DesktopAgent:
         self.current_session = None
         self.current_app = None
         
+        # Sticky project tracking (shift-left sticky project logic from aggregation to collection)
+        # When switching to generic app (browser, terminal), inherit last detected project if within TTL
+        self.sticky_project_name = None  # Last detected project name
+        self.sticky_last_seen = None     # When it was last seen (ISO format)
+        self.sticky_ttl_sec = self.config.get("etl_pipeline.sticky_project_ttl_sec", 900)  # 15 min default
+        
+        # Recover sticky project from last session (survive agent restart)
+        self._recover_sticky_project()
+        
         self.last_flush_time = time.time()
 
     def start(self):
@@ -231,14 +240,117 @@ class DesktopAgent:
             print("\n[Agent] Shutdown signal received...")
             self._shutdown()
 
+    def _recover_sticky_project(self):
+        """Recover sticky project from database on agent startup.
+        
+        This allows the agent to survive restarts by querying the last activity log
+        that has a non-NULL project_name. If it's within the TTL, we consider it
+        the "active" project and seed it into memory.
+        
+        This implements the "shift-left" sticky project logic at collection time.
+        """
+        try:
+            cursor = self.db.conn.execute(
+                """
+                SELECT project_name, end_time FROM raw_activity_logs 
+                WHERE project_name IS NOT NULL 
+                ORDER BY end_time DESC LIMIT 1
+                """
+            )
+            row = cursor.fetchone()
+            
+            if row:
+                project_name, end_time_str = row
+                # Parse the end_time ISO format
+                end_dt = datetime.fromisoformat(end_time_str)
+                current_dt = datetime.utcnow()
+                elapsed_sec = (current_dt - end_dt).total_seconds()
+                
+                # If less than TTL, restore to sticky state
+                if elapsed_sec <= self.sticky_ttl_sec:
+                    self.sticky_project_name = project_name
+                    self.sticky_last_seen = end_time_str
+                    print(f"[Agent] Recovered sticky project '{project_name}' "
+                          f"({elapsed_sec:.0f}s ago, TTL={self.sticky_ttl_sec}s)")
+                else:
+                    print(f"[Agent] Last project '{project_name}' expired "
+                          f"({elapsed_sec:.0f}s ago > TTL={self.sticky_ttl_sec}s)")
+        except Exception as e:
+            print(f"[Agent] Could not recover sticky project: {e}")
+
+    def _is_sticky_ttl_valid(self) -> bool:
+        """Check if sticky project is still within TTL.
+        
+        Returns:
+            bool: True if sticky_project_name exists and is within TTL window
+        """
+        if not self.sticky_last_seen or not self.sticky_project_name:
+            return False
+        
+        try:
+            last_seen_dt = datetime.fromisoformat(self.sticky_last_seen)
+            current_dt = datetime.utcnow()
+            elapsed_sec = (current_dt - last_seen_dt).total_seconds()
+            return elapsed_sec <= self.sticky_ttl_sec
+        except Exception:
+            return False
+
+    def _apply_sticky_project(self, activity_data: dict) -> dict:
+        """Apply sticky project logic to activity data.
+        
+        Shift-left strategy: When collecting raw data, if a generic app (browser, terminal)
+        has no project context, inherit the last-detected project if within 15-min TTL.
+        
+        This is implemented at collection time, not aggregation time, so the database
+        is clean from the start.
+        
+        Args:
+            activity_data: dict with activity data (may have project_name=None)
+            
+        Returns:
+            dict: activity_data with potentially filled-in project_name
+        """
+        current_project = activity_data.get('project_name')
+        current_app = activity_data.get('app_name')
+        current_time = activity_data.get('end_time')
+        
+        # Case 1: Real project detected (IDE)
+        # Update sticky state and return as-is
+        if current_project:
+            self.sticky_project_name = current_project
+            self.sticky_last_seen = current_time
+            # print(f"[Sticky] Updated to project: {current_project}")
+            return activity_data
+        
+        # Case 2: No project detected (generic app like browser)
+        # Check if we can use sticky project
+        if self._is_sticky_ttl_valid():
+            activity_data['project_name'] = self.sticky_project_name
+            # print(f"[Sticky] Applied sticky project '{self.sticky_project_name}' to {current_app}")
+        else:
+            # TTL expired or no sticky project
+            activity_data['project_name'] = None
+            # print(f"[Sticky] No valid sticky project for {current_app}")
+        
+        return activity_data
+
     def _flush_session(self):
-        """Flush current session to database."""
+        """Flush current session to database.
+        
+        Applies sticky project logic at collection time (shift-left):
+        If the session has no detected project (generic app), inherit last-detected
+        project if within TTL (15 min default).
+        """
         if not self.current_session:
             return
         
         try:
             self.current_session.end_session()
             activity_data = self.current_session.collect_data()
+            
+            # Shift-Left Sticky Project: Apply at collection time, not aggregation
+            # This cleans the raw data immediately, no need for ETL aggregation logic
+            activity_data = self._apply_sticky_project(activity_data)
             
             # Validate before insertion
             self.db.validate_activity_log(activity_data)
@@ -249,6 +361,7 @@ class DesktopAgent:
             # Enhanced debug output with file info
             print(f"[DB] Inserted log #{log_id}: {activity_data['app_name']} "
                   f"({activity_data['duration_sec']}s) | File: {activity_data['active_file']} | "
+                  f"Project: {activity_data['project_name']} | "
                   f"KPM:{activity_data['typing_intensity']:.1f} CPM:{activity_data['mouse_click_rate']:.1f} "
                   f"Scrolls:{activity_data['mouse_scroll_events']} Idle:{activity_data['idle_duration_sec']}s")
             

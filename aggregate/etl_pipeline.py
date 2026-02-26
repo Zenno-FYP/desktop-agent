@@ -41,17 +41,12 @@ class ETLPipeline:
         # Read configuration
         if config:
             etl_cfg = config.get('etl_pipeline', {})
-            self.sticky_project_ttl_sec = etl_cfg.get('sticky_project_ttl_sec', 900)  # 15 min default
             self.app_name_mapping = etl_cfg.get('app_name_mapping', {})
             self.language_to_skill_mapping = etl_cfg.get('language_to_skill_mapping', {})
         else:
             # Fallback defaults if no config provided
-            self.sticky_project_ttl_sec = 900  # 15 minutes
             self.app_name_mapping = {}
             self.language_to_skill_mapping = {}
-        
-        # Build distraction apps list (default hardcoded + custom from config)
-        self.distraction_apps = self._build_distraction_apps_list(config)
         
         # Initialize aggregators
         from aggregate.project_aggregator import ProjectAggregator
@@ -70,29 +65,6 @@ class ETLPipeline:
             BehaviorAggregator(),
         ]
     
-    def _build_distraction_apps_list(self, config):
-        """Build a list of distraction apps from config (main list + custom additions).
-        
-        Returns:
-            Set of lowercase app names to treat as distractions
-        """
-        distraction_apps = set()
-        
-        if config:
-            app_cat = config.get('app_categorization', {})
-            
-            # Read main distraction apps list from config
-            main_list = app_cat.get('distraction_apps', [])
-            if main_list:
-                distraction_apps.update({app.lower() for app in main_list})
-            
-            # Add custom distraction apps from config
-            custom = app_cat.get('custom_distraction_apps', [])
-            if custom:
-                distraction_apps.update({app.lower() for app in custom})
-        
-        return distraction_apps
-
     def run(self):
         """Execute the full ETL pipeline.
         
@@ -144,9 +116,14 @@ class ETLPipeline:
     def _transform_logs(self, raw_logs):
         """Apply transformation logic once to create "clean" logs.
         
-        1. Sticky-project inheritance (15-min TTL)
-        2. Blacklist detection (distracted apps)
+        SIMPLIFIED (Shift-Left Sticky Project):
+        1. Blacklist detection (distracted apps) - override to "Distracted"
+        2. Trust database project_name (already filled by upstream collector logic)
         3. Midnight splitting (UTC → local dates, split overnight boundaries)
+        
+        NOTE: Sticky project logic has been moved to collection phase (agent.py).
+        If project_name is in raw_activity_logs, it is mathematically correct.
+        We simply read it and trust it here.
         
         Args:
             raw_logs: List of raw log tuples from _extract_raw_logs()
@@ -156,10 +133,6 @@ class ETLPipeline:
                                      context_state, duration_sec, end_time_utc
                                      AND pre-split into local-date segments
         """
-        sticky_project = None
-        sticky_project_last_seen = None
-        sticky_project_ttl_sec = self.sticky_project_ttl_sec
-
         # App name mapping dictionary for cleaning .exe files (from config)
         app_mapping = self.app_name_mapping
 
@@ -188,41 +161,11 @@ class ETLPipeline:
             start_local = start_utc + timedelta(hours=self.local_tz_offset)
             end_local = end_utc + timedelta(hours=self.local_tz_offset)
 
-            # ==================== BLACKLIST CHECK ====================
-            # Check if app is in distraction/blacklist apps
-            app_name_lower = app_name.lower() if app_name else ""
-            is_blacklisted = any(
-                dist_app in app_name_lower 
-                for dist_app in self.distraction_apps
-            )
-
-            if is_blacklisted:
-                # Distraction apps → force __unassigned__ project and Distracted state
-                attributed_project = "__unassigned__"
-                context_state = "Distracted"
-                sticky_project = None  # Clear sticky on distraction
-                sticky_project_last_seen = None
-            else:
-                # ==================== STICKY PROJECT LOGIC ====================
-                if project_name:
-                    # Log has explicit project → use it and update sticky
-                    attributed_project = project_name
-                    sticky_project = project_name
-                    sticky_project_last_seen = end_utc
-                else:
-                    # No explicit project → try sticky inheritance
-                    if (
-                        sticky_project
-                        and sticky_project_last_seen
-                        and (end_utc - sticky_project_last_seen).total_seconds()
-                        < sticky_project_ttl_sec
-                    ):
-                        attributed_project = sticky_project
-                        sticky_project_last_seen = end_utc
-                    else:
-                        # Sticky expired or not set → unassigned
-                        attributed_project = "__unassigned__"
-                        sticky_project = None
+            # ==================== PROJECT RESOLUTION ====================
+            # Trust the database! The upstream tracker already handled the 15-min TTL.
+            # If there's a project name here, it's because the collector put it there.
+            # If there's no project name, it's definitively unassigned.
+            attributed_project = project_name if project_name else "__unassigned__"
 
             # Handle language (default to "Unknown")
             language_name = detected_language or "Unknown"
