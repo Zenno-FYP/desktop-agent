@@ -1,5 +1,7 @@
 """SQLite database layer for agent."""
+import logging
 import sqlite3
+import threading
 from pathlib import Path
 from datetime import datetime
 
@@ -28,6 +30,8 @@ class Database:
         self.timeout = float(timeout)
         self.journal_mode = journal_mode
         self.config = config
+        self._lock = threading.RLock()
+        self.logger = logging.getLogger(__name__)
 
     @staticmethod
     def _sanitize_journal_mode(journal_mode: str) -> str:
@@ -40,23 +44,25 @@ class Database:
 
     def connect(self):
         """Open connection and enable WAL mode."""
-        self.conn = sqlite3.connect(
-            str(self.db_path),
-            check_same_thread=self.check_same_thread,
-            timeout=self.timeout,
-        )
+        with self._lock:
+            self.conn = sqlite3.connect(
+                str(self.db_path),
+                check_same_thread=self.check_same_thread,
+                timeout=self.timeout,
+            )
 
-        journal_mode = self._sanitize_journal_mode(self.journal_mode)
-        self.conn.execute(f"PRAGMA journal_mode={journal_mode}")
-        # Enable foreign keys
-        self.conn.execute("PRAGMA foreign_keys=ON")
+            journal_mode = self._sanitize_journal_mode(self.journal_mode)
+            self.conn.execute(f"PRAGMA journal_mode={journal_mode}")
+            # Enable foreign keys
+            self.conn.execute("PRAGMA foreign_keys=ON")
         return self.conn
 
     def close(self):
         """Close connection gracefully."""
-        if self.conn:
-            self.conn.close()
-            self.conn = None
+        with self._lock:
+            if self.conn:
+                self.conn.close()
+                self.conn = None
 
     def create_tables(self):
         """Create all tables and indexes if they don't exist."""
@@ -190,9 +196,11 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_pls_needs_sync ON project_loc_snapshots(needs_sync)",
         ]
 
-        with self.conn:
-            for stmt in statements:
-                self.conn.execute(stmt)
+        with self._lock:
+            with self.conn:
+                for stmt in statements:
+                    self.conn.execute(stmt)
+
     def insert_activity_log(self, activity_data: dict) -> int:
         """Insert an activity log entry into raw_activity_logs.
         
@@ -227,20 +235,21 @@ class Database:
             'confidence_score': activity_data.get('confidence_score'),
         }
         
-        cursor = self.conn.execute(
-            """
-            INSERT INTO raw_activity_logs (
-                start_time, end_time, app_name, window_title, duration_sec,
-                project_name, project_path, active_file, detected_language,
-                typing_intensity, mouse_click_rate, mouse_scroll_events, idle_duration_sec,
-                context_state, confidence_score
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO raw_activity_logs (
+                    start_time, end_time, app_name, window_title, duration_sec,
+                    project_name, project_path, active_file, detected_language,
+                    typing_intensity, mouse_click_rate, mouse_scroll_events, idle_duration_sec,
+                    context_state, confidence_score
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuple(fields.values())
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            tuple(fields.values())
-        )
-        self.conn.commit()
-        return cursor.lastrowid
+            self.conn.commit()
+            return cursor.lastrowid
 
     def validate_activity_log(self, log_dict: dict) -> bool:
         """Validate activity log data before insertion.
@@ -326,8 +335,9 @@ class Database:
         
         query += " ORDER BY start_time ASC"
         
-        cursor = self.conn.execute(query, params)
-        rows = cursor.fetchall()
+        with self._lock:
+            cursor = self.conn.execute(query, params)
+            rows = cursor.fetchall()
         
         # Convert sqlite3.Row to dict using column names
         result = []
@@ -383,10 +393,10 @@ class Database:
         """
         
         params = [context_state, confidence_score] + log_ids
-        cursor = self.conn.execute(query, params)
-        self.conn.commit()
-        
-        return cursor.rowcount
+        with self._lock:
+            cursor = self.conn.execute(query, params)
+            self.conn.commit()
+            return cursor.rowcount
 
     def update_log_verification(self, log_id: int, verified_label: str) -> bool:
         """Record user's manual verification for a log entry (ESM popup response).
@@ -402,18 +412,19 @@ class Database:
             raise RuntimeError("Database not connected. Call connect() first.")
         
         try:
-            cursor = self.conn.execute(
-                """
-                UPDATE raw_activity_logs
-                SET manually_verified_label = ?, verified_at = ?
-                WHERE log_id = ?
-                """,
-                (verified_label, datetime.now().isoformat(), log_id)
-            )
-            self.conn.commit()
-            return cursor.rowcount > 0
+            with self._lock:
+                cursor = self.conn.execute(
+                    """
+                    UPDATE raw_activity_logs
+                    SET manually_verified_label = ?, verified_at = ?
+                    WHERE log_id = ?
+                    """,
+                    (verified_label, datetime.now().isoformat(), log_id)
+                )
+                self.conn.commit()
+                return cursor.rowcount > 0
         except sqlite3.Error as e:
-            print(f"[ESM] Database error updating verification: {e}")
+            self.logger.exception("[ESM] Database error updating verification")
             return False
 
     def query_verified_logs(self, limit: int = 100) -> list:

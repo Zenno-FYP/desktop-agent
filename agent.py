@@ -21,8 +21,15 @@ from aggregate.loc_scanner import LOCScanner
 class ActivitySession:
     """Track a single application/window session with all behavioral data."""
 
-    def __init__(self, app_name: str, window_title: str, pid: Optional[int] = None, 
-                 idle_threshold_sec: int = 10, click_debounce_ms: int = 50, config=None):
+    def __init__(
+        self,
+        app_name: str,
+        window_title: str,
+        pid: Optional[int] = None,
+        idle_threshold_sec: int = 10,
+        metrics: Optional[BehavioralMetrics] = None,
+        config=None,
+    ):
         """Initialize new activity session.
         
         Args:
@@ -36,9 +43,13 @@ class ActivitySession:
         self.app_name = app_name
         self.window_title = window_title
         self.pid = pid
+
+        self.logger = logging.getLogger(__name__)
         
-        # Initialize behavioral tracking with config values
-        self.metrics = BehavioralMetrics(click_debounce_ms=click_debounce_ms)
+        # Behavioral tracking is global (listeners started once by DesktopAgent).
+        # Per-session metrics are obtained by resetting counters at session start.
+        self.metrics = metrics or BehavioralMetrics()
+        self.metrics.reset()
         self.idle_detector = IdleDetector(idle_threshold_sec=idle_threshold_sec)
         self.project_detector = ProjectDetector(config=config)
         
@@ -47,9 +58,7 @@ class ActivitySession:
         self.current_file = file
         self.current_project = project
         
-        self.metrics.start_listening()
-        
-        print(f"[Session] Started: {app_name} | {window_title} | File: {file}")
+        self.logger.info("[Session] Started: %s | %s | File: %s", app_name, window_title, file)
 
     def collect_data(self) -> dict:
         """Collect all behavioral data for this session.
@@ -124,9 +133,8 @@ class ActivitySession:
         self.window_title = new_window_title
 
     def end_session(self):
-        """End the session and stop listening for inputs."""
-        self.metrics.stop_listening()
-        print(f"[Session] Ended: {self.app_name}")
+        """End the session."""
+        self.logger.info("[Session] Ended: %s", self.app_name)
 
 
 class DesktopAgent:
@@ -144,6 +152,11 @@ class DesktopAgent:
         self.flush_interval = self.config.get("flush_interval_sec", 300)
         self.idle_threshold_sec = self.config.get("idle_threshold_sec", 10)
         self.click_debounce_ms = self.config.get("behavioral_metrics.click_debounce_ms", 50)
+
+        self.logger = logging.getLogger(__name__)
+
+        # Global input listeners (do not start/stop per session).
+        self.metrics = BehavioralMetrics(click_debounce_ms=int(self.click_debounce_ms))
         self.db_path = self.config.get("db.path", "./agent.db")
         db_check_same_thread = self.config.get("db.check_same_thread", False)
         db_timeout = self.config.get("db.timeout", 10.0)
@@ -159,7 +172,7 @@ class DesktopAgent:
         )
         self.db.connect()
         self.db.create_tables()
-        print(f"[Agent] Database initialized: {self.db_path}")
+        self.logger.info("[Agent] Database initialized: %s", self.db_path)
         
         # Initialize Phase 2: Context detection via block evaluator
         self.context_detector = ContextDetector(self.config)
@@ -210,7 +223,10 @@ class DesktopAgent:
 
     def start(self):
         """Start the monitoring loop."""
-        print("[Agent] Starting desktop activity monitoring...")
+        self.logger.info("[Agent] Starting desktop activity monitoring...")
+
+        # Start global keyboard/mouse listeners once.
+        self.metrics.start_listening()
         
         try:
             while True:
@@ -224,8 +240,12 @@ class DesktopAgent:
                     
                     if app_name:
                         self.current_session = ActivitySession(
-                            app_name, window_title, pid, 
-                            self.idle_threshold_sec, self.click_debounce_ms, config=self.config
+                            app_name,
+                            window_title,
+                            pid,
+                            idle_threshold_sec=self.idle_threshold_sec,
+                            metrics=self.metrics,
+                            config=self.config,
                         )
                         self.current_app = app_name
                 
@@ -237,11 +257,15 @@ class DesktopAgent:
                         self._flush_session()
                         # Start new file session (same app, different file)
                         self.current_session = ActivitySession(
-                            app_name, window_title, pid,
-                            self.idle_threshold_sec, self.click_debounce_ms, config=self.config
+                            app_name,
+                            window_title,
+                            pid,
+                            idle_threshold_sec=self.idle_threshold_sec,
+                            metrics=self.metrics,
+                            config=self.config,
                         )
                         new_file = self.current_session.current_file
-                        print(f"[Tab Switch] {old_file} -> {new_file}")
+                        self.logger.info("[Tab Switch] %s -> %s", old_file, new_file)
                     else:
                         # Same file, just update window title
                         self.current_session.update_file_context(window_title)
@@ -271,7 +295,7 @@ class DesktopAgent:
                 time.sleep(self.sample_interval)
         
         except KeyboardInterrupt:
-            print("\n[Agent] Shutdown signal received...")
+            self.logger.info("[Agent] Shutdown signal received...")
             self._shutdown()
 
     def _recover_sticky_project(self):
@@ -304,13 +328,21 @@ class DesktopAgent:
                 if elapsed_sec <= self.sticky_ttl_sec:
                     self.sticky_project_name = project_name
                     self.sticky_last_seen = end_time_str
-                    print(f"[Agent] Recovered sticky project '{project_name}' "
-                          f"({elapsed_sec:.0f}s ago, TTL={self.sticky_ttl_sec}s)")
+                    self.logger.info(
+                        "[Agent] Recovered sticky project '%s' (%.0fs ago, TTL=%ss)",
+                        project_name,
+                        elapsed_sec,
+                        self.sticky_ttl_sec,
+                    )
                 else:
-                    print(f"[Agent] Last project '{project_name}' expired "
-                          f"({elapsed_sec:.0f}s ago > TTL={self.sticky_ttl_sec}s)")
+                    self.logger.info(
+                        "[Agent] Last project '%s' expired (%.0fs ago > TTL=%ss)",
+                        project_name,
+                        elapsed_sec,
+                        self.sticky_ttl_sec,
+                    )
         except Exception as e:
-            print(f"[Agent] Could not recover sticky project: {e}")
+            self.logger.exception("[Agent] Could not recover sticky project")
 
     def _is_sticky_ttl_valid(self) -> bool:
         """Check if sticky project is still within TTL.
@@ -393,19 +425,24 @@ class DesktopAgent:
             log_id = self.db.insert_activity_log(activity_data)
             
             # Enhanced debug output with file info
-            print(f"[DB] Inserted log #{log_id}: {activity_data['app_name']} "
-                  f"({activity_data['duration_sec']}s) | File: {activity_data['active_file']} | "
-                  f"Project: {activity_data['project_name']} | "
-                  f"KPM:{activity_data['typing_intensity']:.1f} CPM:{activity_data['mouse_click_rate']:.1f} "
-                  f"Scrolls:{activity_data['mouse_scroll_events']} Idle:{activity_data['idle_duration_sec']}s")
+            self.logger.info(
+                "[DB] Inserted log #%s: %s (%ss) | File: %s | Project: %s | KPM:%.1f CPM:%.1f Scrolls:%s Idle:%ss",
+                log_id,
+                activity_data.get("app_name"),
+                activity_data.get("duration_sec"),
+                activity_data.get("active_file"),
+                activity_data.get("project_name"),
+                float(activity_data.get("typing_intensity", 0.0)),
+                float(activity_data.get("mouse_click_rate", 0.0)),
+                activity_data.get("mouse_scroll_events"),
+                activity_data.get("idle_duration_sec"),
+            )
             
             self.last_flush_time = time.time()
             self.current_session = None
         
         except Exception as e:
-            print(f"[Error] Failed to flush session: {e}")
-            import traceback
-            traceback.print_exc()
+            self.logger.exception("[Error] Failed to flush session")
 
     def _check_idle_and_scan_loc(self):
         """Check if user is idle and trigger LOC scanning periodically.
@@ -431,16 +468,16 @@ class DesktopAgent:
         # Only scan if idle for at least configured ratio of the current session
         if idle_duration > session_duration * float(self.loc_scan_idle_ratio_threshold):
             try:
-                print("[LOCScanner] User idle, starting background LOC scan...")
+                self.logger.info("[LOCScanner] User idle, starting background LOC scan...")
                 self.loc_scanner.scan_all_projects()
                 self.last_loc_scan_time = current_time
-                print("[LOCScanner] Completed LOC scan")
+                self.logger.info("[LOCScanner] Completed LOC scan")
             except Exception as e:
-                print(f"[Error] LOC scanning failed: {e}")
+                self.logger.exception("[Error] LOC scanning failed")
 
     def _shutdown(self):
         """Graceful shutdown."""
-        print("[Agent] Shutting down...")
+        self.logger.info("[Agent] Shutting down...")
         
         # Stop background block evaluator
         self.block_evaluator.stop()
@@ -448,11 +485,14 @@ class DesktopAgent:
         # Flush final session
         if self.current_session:
             self._flush_session()
+
+        # Stop global listeners.
+        self.metrics.stop_listening()
         
         # Close database
         self.db.close()
-        print("[Agent] Database closed")
-        print("[Agent] Stopped")
+        self.logger.info("[Agent] Database closed")
+        self.logger.info("[Agent] Stopped")
 
 
 def main():

@@ -12,6 +12,7 @@ Can run:
 from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
+import logging
 
 
 class LOCScanner:
@@ -25,6 +26,7 @@ class LOCScanner:
             config: Config instance (from config/config.py) - REQUIRED
         """
         self.db = db
+        self.logger = logging.getLogger(__name__)
         
         if not config:
             raise ValueError("LOCScanner requires config instance with loc_scanner settings")
@@ -55,12 +57,12 @@ class LOCScanner:
         # Get project from database
         project = self.db.get_project(project_name)
         if not project:
-            print(f"[LOCScanner] Project not found: {project_name}")
+            self.logger.info("[LOCScanner] Project not found: %s", project_name)
             return None
 
         project_path = project["project_path"]
         if not project_path:
-            print(f"[LOCScanner] Project path is NULL: {project_name}")
+            self.logger.info("[LOCScanner] Project path is NULL: %s", project_name)
             return None
 
         # Scan the directory
@@ -87,10 +89,16 @@ class LOCScanner:
                     )
 
             total_files = sum(file_count_by_language.values())
-            print(f"[LOCScanner] {project_name}: {len(loc_by_language)} languages, {sum(loc_by_language.values())} LOC, {total_files} files")
+            self.logger.info(
+                "[LOCScanner] %s: %s languages, %s LOC, %s files",
+                project_name,
+                len(loc_by_language),
+                sum(loc_by_language.values()),
+                total_files,
+            )
             return loc_by_language
         else:
-            print(f"[LOCScanner] No source code found in {project_path}")
+            self.logger.info("[LOCScanner] No source code found in %s", project_path)
             return loc_by_language
 
     def scan_all_projects(self):
@@ -102,10 +110,10 @@ class LOCScanner:
         projects = self.db.get_active_projects_since_scan()
 
         if not projects:
-            print("[LOCScanner] No active projects to scan")
+            self.logger.info("[LOCScanner] No active projects to scan")
             return
 
-        print(f"[LOCScanner] Scanning {len(projects)} active projects...")
+        self.logger.info("[LOCScanner] Scanning %s active projects...", len(projects))
         scanned_count = 0
 
         for project in projects:
@@ -114,7 +122,11 @@ class LOCScanner:
             if result is not None:
                 scanned_count += 1
 
-        print(f"[LOCScanner] Completed: {scanned_count}/{len(projects)} projects scanned")
+        self.logger.info(
+            "[LOCScanner] Completed: %s/%s projects scanned",
+            scanned_count,
+            len(projects),
+        )
 
     def _scan_directory(self, project_path):
         """Recursively scan a directory and count LOC + files by language.
@@ -131,11 +143,11 @@ class LOCScanner:
         project_path_obj = Path(project_path)
 
         if not project_path_obj.exists():
-            print(f"[LOCScanner] Path does not exist: {project_path}")
+            self.logger.info("[LOCScanner] Path does not exist: %s", project_path)
             return dict(loc_by_language), dict(file_count_by_language)
 
         if not project_path_obj.is_dir():
-            print(f"[LOCScanner] Path is not a directory: {project_path}")
+            self.logger.info("[LOCScanner] Path is not a directory: %s", project_path)
             return dict(loc_by_language), dict(file_count_by_language)
 
         try:
@@ -157,7 +169,7 @@ class LOCScanner:
                         file_count_by_language[language] += 1
 
         except (PermissionError, OSError) as e:
-            print(f"[LOCScanner] Error scanning {project_path}: {e}")
+            self.logger.exception("[LOCScanner] Error scanning %s", project_path)
 
         return dict(loc_by_language), dict(file_count_by_language)
 
@@ -203,5 +215,5 @@ class LOCScanner:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 return sum(1 for _ in f)
         except Exception as e:
-            print(f"[LOCScanner] Error reading {file_path}: {e}")
+            self.logger.exception("[LOCScanner] Error reading %s", file_path)
             return 0
