@@ -73,26 +73,22 @@ class BehavioralMetrics:
     def _on_key_press(self, key):
         """Handle keyboard press event."""
         try:
-            with self.lock:
-                # Get key name - handle both Key and KeyCode objects from pynput
-                try:
-                    # Try char attribute first (regular Keys)
-                    if hasattr(key, 'char') and key.char is not None:
-                        key_name = key.char.lower()
-                    # Try name attribute (some Key objects)
-                    elif hasattr(key, 'name') and key.name is not None:
-                        key_name = key.name.lower()
-                    # Fallback: convert to string and parse (for KeyCode objects)
-                    else:
-                        key_name = str(key).replace("Key.", "").replace("KeyCode(", "").replace(")", "").lower()
-                except (AttributeError, TypeError):
-                    # Last resort: convert to string if all else fails
+            # Extract key name OUTSIDE lock to minimize lock time
+            key_name = None
+            try:
+                if hasattr(key, 'char') and key.char is not None:
+                    key_name = key.char.lower()
+                elif hasattr(key, 'name') and key.name is not None:
+                    key_name = key.name.lower()
+                else:
                     key_name = str(key).replace("Key.", "").replace("KeyCode(", "").replace(")", "").lower()
-                
-                # Skip modifier keys
+            except (AttributeError, TypeError):
+                key_name = str(key).replace("Key.", "").replace("KeyCode(", "").replace(")", "").lower()
+            
+            # Only hold lock for counter update - minimal time
+            with self.lock:
                 if key_name not in self.modifier_keys:
                     self.key_count += 1
-                
                 self.last_activity_time = time.time()
         except Exception as e:
             self.logger.exception("[BehavioralMetrics] Key press error")
@@ -101,15 +97,22 @@ class BehavioralMetrics:
         """Handle mouse click event."""
         try:
             if pressed:
-                with self.lock:
-                    current_time = time.time()
-                    
-                    # Debounce rapid clicks (auto-clicks)
-                    if (current_time - self.last_click_time) * 1000 >= self.click_debounce_ms:
-                        self.click_count += 1
-                        self.last_click_time = current_time
-                    
-                    self.last_activity_time = current_time
+                current_time = time.time()
+                # Debounce check (fast, do outside lock first)
+                time_since_last_click = (current_time - self.last_click_time) * 1000
+                
+                if time_since_last_click >= self.click_debounce_ms:
+                    # Only acquire lock for update
+                    with self.lock:
+                        # Double-check after acquiring lock (another thread might have updated)
+                        if (current_time - self.last_click_time) * 1000 >= self.click_debounce_ms:
+                            self.click_count += 1
+                            self.last_click_time = current_time
+                            self.last_activity_time = current_time
+                else:
+                    # Still update activity time even if debounced
+                    with self.lock:
+                        self.last_activity_time = current_time
         except Exception as e:
             self.logger.exception("[BehavioralMetrics] Click error")
 

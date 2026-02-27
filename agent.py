@@ -155,6 +155,9 @@ class DesktopAgent:
         self.config = Config(config_path) if config_path else Config()
         self._setup_logging()
         self.sample_interval = self.config.get("sample_interval_sec", 2)
+        # Note: sample_interval of 2 seconds might cause input lag
+        # Consider increasing to 3-4 seconds if experiencing mouse/keyboard stutter
+        # Longer interval = more responsive input, but less frequent activity tracking
         self.flush_interval = self.config.get("flush_interval_sec", 300)
         self.idle_threshold_sec = self.config.get("idle_threshold_sec", 10)
         self.click_debounce_ms = self.config.get("behavioral_metrics.click_debounce_ms", 50)

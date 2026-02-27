@@ -3,7 +3,10 @@
 ## PHASE 1: Real-time Monitoring Settings
 
 # Sampling interval in seconds (how often to check active window)
-sample_interval_sec: 2
+# Note: Longer intervals reduce CPU and give more responsive input handling
+# Recommended: 3-4 seconds for responsive UI, 2 seconds for precise tracking
+# If experiencing mouse/keyboard lag, increase this value
+sample_interval_sec: 5
 
 # Flush interval in seconds (how often to flush logs to database)
 flush_interval_sec: 300  # configurable
@@ -239,6 +242,8 @@ project_detector:
     .yml: "YAML"
     .xml: "XML"
     .md: "Markdown"
+    .db: "Database"
+    .log: "Logging"
 
   # Strictly bounded drive search fallback (only used when needed)
   # Used by: ProjectDetector._lightweight_drive_search()
