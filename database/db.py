@@ -194,6 +194,21 @@ class Database:
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_pls_needs_sync ON project_loc_snapshots(needs_sync)",
+
+            """
+            CREATE TABLE IF NOT EXISTS local_user (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                backend_user_id TEXT NOT NULL,
+                email TEXT NOT NULL,
+                name TEXT NOT NULL,
+                profile_photo TEXT,
+                is_verified INTEGER NOT NULL DEFAULT 0,
+                role TEXT NOT NULL DEFAULT 'user',
+                created_at TEXT,
+                updated_at TEXT,
+                last_login_at TEXT NOT NULL
+            )
+            """,
         ]
 
         with self._lock:
@@ -1163,3 +1178,64 @@ class Database:
                     SET needs_sync = 0
                     WHERE project_name = ? AND language_name = ?
                 ''', (project_name, language_name))
+
+    # ── Local User (authentication) ──────────────────────────────────
+
+    def upsert_local_user(self, user: dict):
+        """Insert or replace the single local user row.
+
+        Args:
+            user: dict with keys matching the backend user response:
+                  _id, email, name, profilePhoto, isVerified, role,
+                  createdAt, updatedAt
+        """
+        with self._lock:
+            with self.conn:
+                self.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO local_user
+                        (id, backend_user_id, email, name, profile_photo,
+                         is_verified, role, created_at, updated_at, last_login_at)
+                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user.get('_id', ''),
+                        user.get('email', ''),
+                        user.get('name', ''),
+                        user.get('profilePhoto'),
+                        1 if user.get('isVerified') else 0,
+                        user.get('role', 'user'),
+                        user.get('createdAt'),
+                        user.get('updatedAt'),
+                        datetime.utcnow().isoformat(),
+                    ),
+                )
+
+    def get_local_user(self) -> dict | None:
+        """Return the stored local user or None."""
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT backend_user_id, email, name, profile_photo, "
+                "is_verified, role, created_at, updated_at, last_login_at "
+                "FROM local_user WHERE id = 1"
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                '_id': row[0],
+                'email': row[1],
+                'name': row[2],
+                'profilePhoto': row[3],
+                'isVerified': bool(row[4]),
+                'role': row[5],
+                'createdAt': row[6],
+                'updatedAt': row[7],
+                'lastLoginAt': row[8],
+            }
+
+    def clear_local_user(self):
+        """Delete the local user row (logout)."""
+        with self._lock:
+            with self.conn:
+                self.conn.execute("DELETE FROM local_user WHERE id = 1")
