@@ -1,7 +1,9 @@
 """SQLite database layer for agent."""
+import os
 import logging
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -63,6 +65,50 @@ class Database:
             if self.conn:
                 self.conn.close()
                 self.conn = None
+
+    def reset_database(self, *, recreate_tables: bool = True) -> None:
+        """Delete the SQLite database file and recreate an empty schema.
+
+        This is destructive and will remove all locally stored agent data.
+        It also deletes WAL/SHM sidecar files.
+
+        Args:
+            recreate_tables: if True, reconnects and calls create_tables().
+        """
+        with self._lock:
+            # Ensure connection is closed before deleting.
+            if self.conn:
+                try:
+                    self.conn.close()
+                finally:
+                    self.conn = None
+
+            db_file = self.db_path
+            sidecars = [
+                db_file,
+                db_file.with_suffix(db_file.suffix + "-wal"),
+                db_file.with_suffix(db_file.suffix + "-shm"),
+            ]
+
+            # Windows can hold locks briefly; retry a few times.
+            last_err: Exception | None = None
+            for _ in range(5):
+                try:
+                    for p in sidecars:
+                        if p.exists():
+                            os.remove(str(p))
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    time.sleep(0.2)
+
+            if last_err is not None:
+                raise RuntimeError(f"Failed to reset database at {db_file}: {last_err}")
+
+            if recreate_tables:
+                self.connect()
+                self.create_tables()
 
     def create_tables(self):
         """Create all tables and indexes if they don't exist."""
@@ -206,7 +252,7 @@ class Database:
                 role TEXT NOT NULL DEFAULT 'user',
                 created_at TEXT,
                 updated_at TEXT,
-                last_login_at TEXT NOT NULL
+                last_sync_at TEXT NOT NULL
             )
             """,
         ]
@@ -1195,7 +1241,7 @@ class Database:
                     """
                     INSERT OR REPLACE INTO local_user
                         (id, backend_user_id, email, name, profile_photo,
-                         is_verified, role, created_at, updated_at, last_login_at)
+                         is_verified, role, created_at, updated_at, last_sync_at)
                     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -1216,7 +1262,7 @@ class Database:
         with self._lock:
             cur = self.conn.execute(
                 "SELECT backend_user_id, email, name, profile_photo, "
-                "is_verified, role, created_at, updated_at, last_login_at "
+                "is_verified, role, created_at, updated_at, last_sync_at "
                 "FROM local_user WHERE id = 1"
             )
             row = cur.fetchone()
@@ -1231,7 +1277,7 @@ class Database:
                 'role': row[5],
                 'createdAt': row[6],
                 'updatedAt': row[7],
-                'lastLoginAt': row[8],
+                'lastSyncAt': row[8],
             }
 
     def clear_local_user(self):

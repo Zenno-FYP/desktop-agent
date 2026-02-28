@@ -91,6 +91,15 @@ class AuthBridge:
             logger.info("[AuthBridge] on_login_success  provider=%s email=%s", provider, email)
             self._id_token = id_token
 
+            existing_email = ""
+            try:
+                existing_user = self._db.get_local_user()
+                if existing_user and isinstance(existing_user, dict):
+                    existing_email = str(existing_user.get("email") or "").strip().lower()
+            except Exception:
+                # If reading local_user fails, do not block sign-in.
+                existing_email = ""
+
             # Seed token cache and persist refresh token for future API calls.
             set_initial_tokens(id_token=id_token, refresh_token=refresh_token)
 
@@ -105,6 +114,16 @@ class AuthBridge:
             else:
                 # Google / GitHub → PUT (idempotent)
                 user_data = self._put_user(id_token, email, name)
+
+            # Reset local DB only if the signed-in user changed.
+            new_email = str(user_data.get("email") or email or "").strip().lower()
+            if existing_email and new_email and existing_email != new_email:
+                logger.info(
+                    "[AuthBridge] User changed (%s -> %s). Resetting local DB.",
+                    existing_email,
+                    new_email,
+                )
+                self._db.reset_database(recreate_tables=True)
 
             self._db.upsert_local_user(user_data)
             self._user_data = user_data
