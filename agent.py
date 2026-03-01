@@ -16,6 +16,8 @@ from monitor.project_detector import ProjectDetector
 from analyze.context_detector import ContextDetector
 from analyze.block_evaluator import BlockEvaluator
 from aggregate.loc_scanner import LOCScanner
+from aggregate.etl_pipeline import ETLPipeline
+from sync.activity_syncer import ActivitySyncer
 
 
 class ActivitySession:
@@ -192,7 +194,17 @@ class DesktopAgent:
         # Initialize Phase 4: LOC Scanner (triggered hourly)
         self.loc_scanner = LOCScanner(self.db, config=self.config)
         self.loc_scan_interval_sec = self.config.get("loc_scanner.scan_interval_sec", 3600)  # 1 hour default
-        self.last_loc_scan_time = 0
+        self.last_loc_scan_time = time.time()  # Initialize to now; first scan waits 1 hour
+        
+        # Initialize ETL Pipeline (aggregation; triggered every 15 minutes)
+        self.etl_pipeline = ETLPipeline(self.db, config=self.config)
+        self.etl_interval_sec = self.config.get("etl_pipeline.interval_sec", 900)  # 15 min default
+        self.last_etl_time = time.time()  # Initialize to now; first sync waits 15 minutes
+        
+        # Initialize Activity Syncer (send aggregates to backend after ETL)
+        self.activity_syncer = ActivitySyncer(self.db)
+        self.sync_interval_sec = self.config.get("sync.interval_sec", 900)  # 15 min default (mirrors ETL)
+        self.last_sync_time = time.time()  # Initialize to now; first sync waits 15 minutes
         
         # Session tracking
         self.current_session = None
@@ -299,6 +311,9 @@ class DesktopAgent:
                 
                 # Check idle and trigger LOC scanning
                 self._check_idle_and_scan_loc()
+                
+                # Run ETL pipeline and sync (every 15 minutes)
+                self._run_etl_and_sync()
                 
                 time.sleep(self.sample_interval)
         
@@ -472,6 +487,44 @@ class DesktopAgent:
         except Exception as e:
             self.logger.exception("[Error] LOC scanning failed")
 
+    def _run_etl_and_sync(self):
+        """Run ETL pipeline and activity sync periodically (every 15 minutes).
+        
+        Flow:
+        1. Run ETL: aggregate raw logs into daily project tables
+        2. Run Sync: send pending aggregates to backend via activity sync API
+        
+        Both are optional; failures don't block agent operation.
+        """
+        current_time = time.time()
+        
+        # Check if enough time has passed since last ETL
+        if current_time - self.last_etl_time < self.etl_interval_sec:
+            return  # Not yet, skip
+        
+        try:
+            # ===== ETL PHASE =====
+            self.logger.info("[ETL] Starting ETL pipeline...")
+            self.etl_pipeline.run()
+            self.logger.info("[ETL] Completed ETL aggregation")
+            
+            # ===== SYNC PHASE =====
+            # After ETL completes, check if there's pending data to sync
+            if self.db.has_pending_sync():
+                self.logger.info("[Sync] Pending data detected; starting activity sync...")
+                success = self.activity_syncer.sync_activity()
+                if success:
+                    self.logger.info("[Sync] Activity sync completed successfully")
+                else:
+                    self.logger.warning("[Sync] Activity sync failed; will retry next cycle")
+            else:
+                self.logger.debug("[Sync] No pending data to sync")
+            
+            self.last_etl_time = current_time
+            
+        except Exception as e:
+            self.logger.exception("[Error] ETL/Sync cycle failed")
+
     def _shutdown(self):
         """Graceful shutdown."""
         self.logger.info("[Agent] Shutting down...")
@@ -482,6 +535,18 @@ class DesktopAgent:
         # Flush final session
         if self.current_session:
             self._flush_session()
+        
+        # Final ETL if needed
+        try:
+            self.logger.info("[Agent] Running final ETL before shutdown...")
+            self.etl_pipeline.run()
+            
+            # Final sync if pending data exists
+            if self.db.has_pending_sync():
+                self.logger.info("[Agent] Syncing pending data before shutdown...")
+                self.activity_syncer.sync_activity()
+        except Exception as e:
+            self.logger.warning(f"[Agent] Final ETL/sync failed: {e}")
 
         # Stop global listeners.
         self.metrics.stop_listening()

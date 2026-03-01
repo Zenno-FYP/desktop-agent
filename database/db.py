@@ -251,8 +251,7 @@ class Database:
                 is_verified INTEGER NOT NULL DEFAULT 0,
                 role TEXT NOT NULL DEFAULT 'user',
                 created_at TEXT,
-                updated_at TEXT,
-                last_sync_at TEXT NOT NULL
+                updated_at TEXT
             )
             """,
         ]
@@ -1241,8 +1240,8 @@ class Database:
                     """
                     INSERT OR REPLACE INTO local_user
                         (id, backend_user_id, email, name, profile_photo,
-                         is_verified, role, created_at, updated_at, last_sync_at)
-                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         is_verified, role, created_at, updated_at)
+                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         user.get('_id', ''),
@@ -1253,7 +1252,6 @@ class Database:
                         user.get('role', 'user'),
                         user.get('createdAt'),
                         user.get('updatedAt'),
-                        datetime.utcnow().isoformat(),
                     ),
                 )
 
@@ -1262,7 +1260,7 @@ class Database:
         with self._lock:
             cur = self.conn.execute(
                 "SELECT backend_user_id, email, name, profile_photo, "
-                "is_verified, role, created_at, updated_at, last_sync_at "
+                "is_verified, role, created_at, updated_at "
                 "FROM local_user WHERE id = 1"
             )
             row = cur.fetchone()
@@ -1277,7 +1275,6 @@ class Database:
                 'role': row[5],
                 'createdAt': row[6],
                 'updatedAt': row[7],
-                'lastSyncAt': row[8],
             }
 
     def clear_local_user(self):
@@ -1285,3 +1282,115 @@ class Database:
         with self._lock:
             with self.conn:
                 self.conn.execute("DELETE FROM local_user WHERE id = 1")
+
+    # ── Sync Operations (for activity sync to backend) ──────────────────
+
+    def has_pending_sync(self) -> bool:
+        """Check if any aggregated table has pending sync data (needs_sync = 1).
+        
+        Fast check using EXISTS to avoid scanning large tables.
+        
+        Returns:
+            True if any record has needs_sync = 1, False otherwise
+        """
+        with self._lock:
+            # Check any aggregated table for pending data
+            cursor = self.conn.execute('''
+                SELECT 1 FROM daily_project_languages WHERE needs_sync = 1
+                UNION ALL
+                SELECT 1 FROM daily_project_apps WHERE needs_sync = 1
+                UNION ALL
+                SELECT 1 FROM daily_project_skills WHERE needs_sync = 1
+                UNION ALL
+                SELECT 1 FROM daily_project_context WHERE needs_sync = 1
+                UNION ALL
+                SELECT 1 FROM daily_project_behavior WHERE needs_sync = 1
+                UNION ALL
+                SELECT 1 FROM project_loc_snapshots WHERE needs_sync = 1
+                LIMIT 1
+            ''')
+            return cursor.fetchone() is not None
+
+    def get_projects_pending_sync(self) -> list[str]:
+        """Get list of project names with pending sync data (needs_sync = 1).
+        
+        Returns:
+            List of project names that have aggregates waiting to sync
+        """
+        with self._lock:
+            cursor = self.conn.execute('''
+                SELECT DISTINCT project_name
+                FROM daily_project_languages
+                WHERE needs_sync = 1
+                ORDER BY project_name
+            ''')
+            return [row[0] for row in cursor.fetchall()]
+
+    def mark_project_synced(self, project_name: str, date: str | None = None):
+        """Mark aggregates as synced (needs_sync = 0) for a project.
+        
+        Args:
+            project_name: Project identifier
+            date: Optional specific date (YYYY-MM-DD). If None, marks entire project.
+        """
+        with self._lock:
+            with self.conn:
+                if date is None:
+                    # Mark all dates for this project
+                    self.conn.execute('''
+                        UPDATE daily_project_languages
+                        SET needs_sync = 0
+                        WHERE project_name = ?
+                    ''', (project_name,))
+                    self.conn.execute('''
+                        UPDATE daily_project_apps
+                        SET needs_sync = 0
+                        WHERE project_name = ?
+                    ''', (project_name,))
+                    self.conn.execute('''
+                        UPDATE daily_project_skills
+                        SET needs_sync = 0
+                        WHERE project_name = ?
+                    ''', (project_name,))
+                    self.conn.execute('''
+                        UPDATE daily_project_context
+                        SET needs_sync = 0
+                        WHERE project_name = ?
+                    ''', (project_name,))
+                    self.conn.execute('''
+                        UPDATE daily_project_behavior
+                        SET needs_sync = 0
+                        WHERE project_name = ?
+                    ''', (project_name,))
+                    self.conn.execute('''
+                        UPDATE project_loc_snapshots
+                        SET needs_sync = 0
+                        WHERE project_name = ?
+                    ''', (project_name,))
+                else:
+                    # Mark only specific date
+                    self.conn.execute('''
+                        UPDATE daily_project_languages
+                        SET needs_sync = 0
+                        WHERE project_name = ? AND date = ?
+                    ''', (project_name, date))
+                    self.conn.execute('''
+                        UPDATE daily_project_apps
+                        SET needs_sync = 0
+                        WHERE project_name = ? AND date = ?
+                    ''', (project_name, date))
+                    self.conn.execute('''
+                        UPDATE daily_project_skills
+                        SET needs_sync = 0
+                        WHERE project_name = ? AND date = ?
+                    ''', (project_name, date))
+                    self.conn.execute('''
+                        UPDATE daily_project_context
+                        SET needs_sync = 0
+                        WHERE project_name = ? AND date = ?
+                    ''', (project_name, date))
+                    self.conn.execute('''
+                        UPDATE daily_project_behavior
+                        SET needs_sync = 0
+                        WHERE project_name = ? AND date = ?
+                    ''', (project_name, date))
