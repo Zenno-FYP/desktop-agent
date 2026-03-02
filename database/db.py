@@ -5,7 +5,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 class Database:
@@ -43,6 +43,14 @@ class Database:
         candidate = str(journal_mode).strip().upper()
         allowed = {"WAL", "DELETE", "TRUNCATE", "PERSIST", "MEMORY", "OFF"}
         return candidate if candidate in allowed else "WAL"
+    
+    def _get_local_time(self) -> str:
+        """Get current local time as formatted string (YYYY-MM-DD HH:MM:SS)."""
+        return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    def _get_local_time_iso(self) -> str:
+        """Get current local time as ISO format string (e.g., 2026-03-02T15:30:45.123456)."""
+        return datetime.now().isoformat()
 
     def connect(self):
         """Open connection and enable WAL mode."""
@@ -479,7 +487,7 @@ class Database:
                     SET manually_verified_label = ?, verified_at = ?
                     WHERE log_id = ?
                     """,
-                    (verified_label, datetime.now().isoformat(), log_id)
+                    (verified_label, self._get_local_time_iso(), log_id)
                 )
                 self.conn.commit()
                 return cursor.rowcount > 0
@@ -546,7 +554,7 @@ class Database:
             project_name: Unique project identifier (PRIMARY KEY)
             project_path: Local filesystem path to project
         """
-        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        now = self._get_local_time()
         
         with self.conn:
             self.conn.execute('''
@@ -562,9 +570,9 @@ class Database:
         
         Args:
             project_name: Project identifier
-            timestamp: UTC ISO string (default: now)
+            timestamp: Local time string in 'YYYY-MM-DD HH:MM:SS' format (default: now)
         """
-        ts = timestamp or datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        ts = timestamp or self._get_local_time()
         
         with self.conn:
             self.conn.execute('''

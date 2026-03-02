@@ -9,7 +9,7 @@ Flow:
 2. TRANSFORM: Run once:
     - Project attribution (trust raw logs; assign "__unassigned__" when missing)
     - Manual context override (use manually_verified_label when present)
-    - Midnight splitting (convert UTC to local dates, split overnight boundaries)
+    - Midnight splitting (split overnight boundaries in local time)
 3. DELEGATE: Pass clean batch to each aggregator → get SQL commands
 4. LOAD: Execute all SQL commands in ONE atomic transaction
 """
@@ -21,22 +21,15 @@ from collections import defaultdict
 class ETLPipeline:
     """The Maestro: orchestrates extraction, transformation, and delegation."""
 
-    def __init__(self, db, config=None, local_tz_offset_hours=None):
+    def __init__(self, db, config=None):
         """Initialize ETL pipeline.
         
         Args:
             db: Database instance (from database/db.py)
             config: Config instance (from config/config.py) - optional but recommended
-            local_tz_offset_hours: Hours offset from UTC for local date bucketing (e.g., -5 for EST)
-                                  If None, will be read from config under etl_pipeline.local_tz_offset_hours
         """
         self.db = db
         self.config = config
-        if local_tz_offset_hours is None and config is not None:
-            etl_cfg = config.get("etl_pipeline", {})
-            local_tz_offset_hours = etl_cfg.get("local_tz_offset_hours", 0)
-
-        self.local_tz_offset = local_tz_offset_hours or 0
         
         # Read configuration
         if config:
@@ -64,6 +57,10 @@ class ETLPipeline:
             ContextAggregator(),
             BehaviorAggregator(),
         ]
+    
+    def _get_local_time(self) -> str:
+        """Get current local time as formatted string (YYYY-MM-DD HH:MM:SS)."""
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     def run(self):
         """Execute the full ETL pipeline.
@@ -118,7 +115,7 @@ class ETLPipeline:
         
         SIMPLIFIED (Shift-Left Sticky Project):
         1. Trust database project_name (already filled by upstream collector logic)
-        2. Midnight splitting (UTC → local dates, split overnight boundaries)
+        2. Midnight splitting (split overnight boundaries in local time)
         
         NOTE: Sticky project logic has been moved to collection phase (agent.py).
         If project_name is in raw_activity_logs, it is mathematically correct.
@@ -129,7 +126,7 @@ class ETLPipeline:
             
         Returns:
             List of dicts with keys: log_id, date, app_name, project_name, language_name,
-                                     context_state, duration_sec, end_time_utc
+                                     context_state, duration_sec, end_time
                                      AND pre-split into local-date segments
         """
         # App name mapping dictionary for cleaning .exe files (from config)
@@ -153,13 +150,9 @@ class ETLPipeline:
             mouse_scroll_events,
             idle_duration_sec,
         ) in raw_logs:
-            # Parse timestamps (UTC)
-            start_utc = datetime.fromisoformat(start_time_iso)
-            end_utc = datetime.fromisoformat(end_time_iso)
-
-            # Convert to local time for date bucketing
-            start_local = start_utc + timedelta(hours=self.local_tz_offset)
-            end_local = end_utc + timedelta(hours=self.local_tz_offset)
+            # Parse timestamps (already in local time)
+            start_local = datetime.fromisoformat(start_time_iso)
+            end_local = datetime.fromisoformat(end_time_iso)
 
             # ==================== PROJECT RESOLUTION ====================
             # Trust the database! The upstream tracker already handled the 15-min TTL.
@@ -191,9 +184,6 @@ class ETLPipeline:
             for seg_start, seg_end in segments:
                 date_str = seg_start.strftime("%Y-%m-%d")
                 seg_duration = int((seg_end - seg_start).total_seconds())
-                
-                # Convert segment end back to UTC for accurate DB timestamps
-                seg_end_utc = seg_end - timedelta(hours=self.local_tz_offset)
 
                 transformed.append({
                     "log_id": log_id,
@@ -204,7 +194,7 @@ class ETLPipeline:
                     "language_name": language_name,
                     "context_state": final_context,
                     "duration_sec": seg_duration,
-                    "end_time_utc": seg_end_utc.strftime("%Y-%m-%d %H:%M:%S"),
+                    "end_time_local": seg_end.strftime("%Y-%m-%d %H:%M:%S"),
                     "typing_intensity": typing_intensity,
                     "mouse_click_rate": mouse_click_rate,
                     "mouse_scroll_events": mouse_scroll_events,
@@ -251,7 +241,7 @@ class ETLPipeline:
             with self.db.conn:
                 # Ensure __unassigned__ project exists before inserting aggregated data
                 # (needed for foreign key constraints in aggregation tables)
-                now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                now = self._get_local_time()
                 self.db.conn.execute(
                     """
                     INSERT OR IGNORE INTO projects (project_name, project_path, first_seen_at, last_active_at, needs_sync)
@@ -267,7 +257,7 @@ class ETLPipeline:
                 # Mark all raw logs as aggregated
                 log_ids = list(set(log["log_id"] for log in transformed_logs))
                 if log_ids:
-                    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                    now = self._get_local_time()
                     placeholders = ",".join("?" * len(log_ids))
                     self.db.conn.execute(
                         f"""

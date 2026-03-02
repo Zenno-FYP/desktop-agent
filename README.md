@@ -47,7 +47,7 @@ python agent.py
 3. **Aggregate (ETL Maestro)**
    - After tagging, runs the ETL pipeline to upsert daily project/app/language/skill/context/behavior rollups
    - Applies manual verification override: `manually_verified_label` wins over ML/heuristic
-   - Buckets by local date using `etl_pipeline.local_tz_offset_hours`
+   - Buckets by local date (auto-detected from system timezone)
 
 4. **LOC snapshots (idle-triggered)**
    - Periodically scans active projects while you’re idle
@@ -94,7 +94,6 @@ esm_popup:
   confidence_threshold: 0.70
 
 etl_pipeline:
-  local_tz_offset_hours: 0
   sticky_project_ttl_sec: 900
 
 loc_scanner:

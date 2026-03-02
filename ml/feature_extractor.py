@@ -92,7 +92,7 @@ class FeatureExtractor:
             end_time = datetime.fromisoformat(end_time)
             time_of_day = float(end_time.hour)
         else:
-            time_of_day = float(datetime.utcnow().hour)
+            time_of_day = float(datetime.now().hour)
         
         # 9. Day of Week (0-6, Monday-Sunday)
         if isinstance(end_time, datetime):
@@ -101,7 +101,7 @@ class FeatureExtractor:
             end_time = datetime.fromisoformat(end_time)
             day_of_week = float(end_time.weekday())
         else:
-            day_of_week = float(datetime.utcnow().weekday())
+            day_of_week = float(datetime.now().weekday())
         
         # Return as numpy array
         return np.array([

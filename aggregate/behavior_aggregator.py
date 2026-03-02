@@ -26,7 +26,7 @@ class BehaviorAggregator:
         Args:
             transformed_logs: List of transformed log dicts from ETLPipeline.
                             Keys: log_id, date, app_name, project_name, project_path,
-                                  language_name, context_state, duration_sec, end_time_utc
+                                  language_name, context_state, duration_sec, end_time_local
         
         Returns:
             List of (query, params) tuples ready to execute in a transaction

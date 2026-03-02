@@ -180,7 +180,7 @@ class BlockEvaluator:
         while self.running:
             try:
                 # Compute seconds until next block boundary
-                now = datetime.utcnow()
+                now = datetime.now()
                 seconds_since_epoch = now.timestamp()
                 remainder = seconds_since_epoch % float(self.block_duration_sec)
                 seconds_until_next_boundary = float(self.block_duration_sec) - remainder
@@ -206,7 +206,8 @@ class BlockEvaluator:
         - Queries by end_time (not start_time) to catch long sessions that span blocks
         - Runs at wall-clock boundaries (via _run_loop) for stable, predictable scheduling
         """
-        now = datetime.utcnow()  # Use UTC to match agent's logging
+        # Use LOCAL time to match agent's logging and activity logs
+        now = datetime.now()
         block_start_time = now - timedelta(seconds=self.block_duration_sec)
         
         try:
@@ -226,6 +227,8 @@ class BlockEvaluator:
             
             # Aggregate metrics from all sessions in this block
             block_metrics = self._aggregate_block_metrics(logs)
+            # Add end_time for feature extraction (hour of day and day of week)
+            block_metrics['end_time'] = now
             
             # Evaluate using ML model (with heuristic fallback)
             context_state, confidence_score = self._predict_context(block_metrics)

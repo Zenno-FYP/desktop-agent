@@ -368,7 +368,7 @@ esm_popup:
 # Used by: 
 #   - DesktopAgent (agent.py - COLLECTION PHASE): Applies sticky project logic when flushing sessions
 #   - ETL pipeline (aggregate/ module - AGGREGATION PHASE): Buckets events and runs aggregators
-# Purpose: Configure context aggregation behavior (timezone, project stickiness, app display names)
+# Purpose: Configure context aggregation behavior (project stickiness, app display names)
 # NOTE: SHIFT-LEFT IMPLEMENTATION
 #   - Sticky project logic moved to COLLECTION PHASE (agent.py)
 #   - When a browser/terminal session has no explicit project, it inherits last-detected project
@@ -379,15 +379,10 @@ esm_popup:
 #      a. Check if sticky_project_name exists in memory
 #      b. Check if it's within TTL window (15 min)
 #      c. If yes: Assign detected project to this activity; if no: leave as NULL
-#   3. local_tz_offset_hours: Bucket events into daily sessions (midnight = session boundary)
+#   3. Timezone: Auto-detected from system (buckets events into daily sessions at local midnight)
 #   4. app_name_mapping: Normalize app display names (code.exe → "VS Code") for reports
-# Fallback: If config missing, defaults: tz_offset=0 (UTC), sticky_ttl=900s, no normalization
+# Fallback: If config missing, defaults:  sticky_ttl=900s, no normalization
 etl_pipeline:
-  # Local timezone offset used for daily bucketing (midnight splitting)
-  # Example: +5.5 for IST, -5 for EST.
-  # Impact: Determines session split boundaries in daily reports
-  local_tz_offset_hours: 0
-
   # Sticky project context TTL in seconds
   # Used by: DesktopAgent._apply_sticky_project() during collection
   # Purpose: Maintain project context across app switches (IDE → browser → IDE workflow)

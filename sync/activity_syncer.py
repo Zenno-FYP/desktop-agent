@@ -120,9 +120,12 @@ class ActivitySyncer:
             else:
                 raise ValueError("Cannot determine user_id; not signed in?")
         
+        # Get current local time
+        local_now = datetime.now()
+        
         payload = {
             "user_id": user_id,
-            "sync_timestamp": datetime.utcnow().isoformat() + "Z",
+            "sync_timestamp": local_now.isoformat(),
             "data": projects,
         }
         

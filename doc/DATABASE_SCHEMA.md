@@ -272,7 +272,7 @@ ORDER BY lines_of_code DESC;
 
 ## Notes
 
-- All timestamps are in **ISO 8601 format** (UTC): `YYYY-MM-DDTHH:MM:SS.ffffff`
+- All timestamps are in **ISO 8601 format** (local time): `YYYY-MM-DDTHH:MM:SS.ffffff` (no timezone suffix)
 - Dates in aggregated tables use **YYYY-MM-DD** format (no time component)
 - Duration columns (`duration_sec`) are measured in **seconds**
 - The `needs_sync` flag is a **lazy sync marker** — records are only pushed to the backend when flagged as needing sync

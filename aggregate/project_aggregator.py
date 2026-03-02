@@ -8,8 +8,16 @@ from datetime import datetime
 
 class ProjectAggregator:
     """Generates UPSERT commands for projects table."""
-
-    def generate_upserts(self, transformed_logs):
+    
+    def __init__(self):
+        """Initialize aggregator."""
+        pass
+    
+    def _get_local_time(self) -> str:
+        """Get current local time as formatted string."""
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    def generate_sql(self, transformed_logs: list) -> list:
         """Generate UPSERT commands for unique projects in the batch.
         
         Implements Path Superiority Rule:
@@ -19,17 +27,17 @@ class ProjectAggregator:
         Args:
             transformed_logs: List of transformed log dicts from ETLPipeline.
                             Keys: log_id, date, app_name, project_name, project_path,
-                                  language_name, context_state, duration_sec, end_time_utc
+                                  language_name, context_state, duration_sec, end_time
         
         Returns:
             List of (query, params) tuples ready to execute in a transaction
         """
-        unique_projects = {}  
+        unique_projects = {}
         
         for log in transformed_logs:
             p_name = log["project_name"]
             p_path = log["project_path"]
-            end_time = log["end_time_utc"]
+            end_time = log["end_time"]
             
             # Only track real projects (not __unassigned__)
             if p_name and p_name != "__unassigned__":
@@ -65,7 +73,7 @@ class ProjectAggregator:
         sql_commands = []
         
         for p_name, data in unique_projects.items():
-            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            now = self._get_local_time()
             path = data["path"]
             last_active = data["last_active"]
             

@@ -11,7 +11,7 @@ Can run:
 
 from pathlib import Path
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
 
@@ -44,6 +44,10 @@ class LOCScanner:
         
         # Directories to skip during code scanning
         self.skip_dirs = set(loc_cfg.get('skip_directories', []))
+    
+    def _get_local_time(self) -> str:
+        """Get current local time as formatted string."""
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def scan_project(self, project_name):
         """Scan a single project by name and update project_loc_snapshots.
@@ -69,7 +73,7 @@ class LOCScanner:
         loc_by_language, file_count_by_language = self._scan_directory(project_path)
 
         # Store results in project_loc_snapshots
-        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now = self._get_local_time()
 
         if loc_by_language:
             with self.db.conn:

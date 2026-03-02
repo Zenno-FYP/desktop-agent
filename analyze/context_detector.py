@@ -15,9 +15,9 @@ class ContextDetector:
     """Detect developer's mental context from block metrics.
     
     Uses Application Categorization to distinguish between:
-    - Research/Debugging: Multiple app switches but all productive apps
-    - True Distraction: Touching social media, messaging, entertainment apps
-    - Focus: Deep work with minimal interruptions
+    - Focused: Deep work with high typing and clicks
+    - Reading: Low typing, active scrolling (documentation/research)
+    - Distracted: Non-work apps or frequent context switching
     - Idle: No activity or thinking
     
     App lists are loaded from config.yaml (app_categorization.productivity_apps
@@ -38,18 +38,12 @@ class ContextDetector:
         
         self.focused_kpm_min = heuristics.get('focused_kpm_min', 40)
         self.focused_cpm_min = heuristics.get('focused_cpm_min', 15)
-        self.focused_app_switches_max = heuristics.get('focused_app_switches_max', 2)
         self.focused_confidence = heuristics.get('focused_confidence', 0.92)
         
         self.reading_kpm_max = heuristics.get('reading_kpm_max', 20)
         self.reading_cpm_max = heuristics.get('reading_cpm_max', 10)
         self.reading_scrolls_min = heuristics.get('reading_scrolls_min', 5)
         self.reading_confidence = heuristics.get('reading_confidence', 0.80)
-        
-        self.research_app_switches_min = heuristics.get('research_app_switches_min', 3)
-        self.research_scrolls_min = heuristics.get('research_scrolls_min', 5)
-        self.research_cpm_min = heuristics.get('research_cpm_min', 5)
-        self.research_confidence = heuristics.get('research_confidence', 0.85)
         
         self.idle_ratio_threshold = heuristics.get('idle_ratio_threshold', 0.5)
         self.idle_confidence = heuristics.get('idle_confidence', 0.85)
@@ -173,30 +167,19 @@ class ContextDetector:
         if (kpm < self.reading_kpm_max and cpm < self.reading_cpm_max and scrolls > self.reading_scrolls_min):
             return "Reading", self.reading_confidence
         
-        # 4. FOCUSED: High typing, moderate clicks, few app switches
-        #    (Suggests deep work on single project)
-        if kpm > self.focused_kpm_min and cpm > self.focused_cpm_min and app_switches <= self.focused_app_switches_max:
+        # 4. FOCUSED: High typing, moderate clicks
+        #    (Suggests deep work on project)
+        if kpm > self.focused_kpm_min and cpm > self.focused_cpm_min:
             return "Focused", self.focused_confidence
         
-        # 5. RESEARCH/DEBUGGING: Multiple app switches but NO distraction apps
-        #    (Debugging involves VS Code → Browser → Terminal → Stack Overflow)
-        #    (This is PRODUCTIVE context switching, not distraction)
-        if app_switches >= self.research_app_switches_min and not touched_distraction:
-            if scrolls > self.research_scrolls_min or cpm > self.research_cpm_min:
-                # Reading across multiple productivity apps (documentation, research)
-                return "Focused (Research)", self.research_confidence
-            elif kpm > self.reading_kpm_max:
-                # Active typing/coding across multiple apps
-                return "Focused", 0.80
-        
-        # 6. DISTRACTED: Multiple app switches AND touched distraction apps
+        # 5. DISTRACTED: Multiple app switches AND touched distraction apps
         #    (Genuine context switching with non-work apps)
         if app_switches >= self.distracted_app_switches_min and touched_distraction:
             return "Distracted", self.distracted_confidence
         
-        # 7. MODERATE DISTRACTION: Multiple project switches without focus
+        # 6. MODERATE DISTRACTION: Multiple project switches without focus
         #    (Hopping between projects without deep work)
-        if project_switches >= self.research_app_switches_min and kpm < self.distracted_immediate_kpm_max and not touched_distraction:
+        if project_switches >= self.distracted_app_switches_min and kpm < self.distracted_immediate_kpm_max and not touched_distraction:
             return "Distracted", 0.70
         
         # 8. MODERATE ACTIVITY: Balanced typing/clicking but multiple app switches

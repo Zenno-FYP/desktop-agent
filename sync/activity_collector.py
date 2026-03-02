@@ -38,8 +38,8 @@ class ActivityCollector:
                 {
                     "project_name": "desktop-agent",
                     "metadata": {
-                        "first_seen_at": "2026-02-27T09:00:00Z",
-                        "last_active_at": "2026-03-01T14:25:00Z"
+                        "first_seen_at": "2026-02-27T09:00:00",
+                        "last_active_at": "2026-03-01T14:25:00"
                     },
                     "current_loc": [
                         {"language": "python", "lines": 4500, "files": 12}
@@ -127,7 +127,7 @@ class ActivityCollector:
             project_name: Project identifier
             
         Returns:
-            Dict with first_seen_at, last_active_at, or None if not found
+            Dict with first_seen_at, last_active_at (in local time), or None if not found
         """
         try:
             cursor = self.db.conn.execute(
@@ -150,7 +150,7 @@ class ActivityCollector:
         except Exception as e:
             logger.error(f"Error querying metadata for '{project_name}': {e}")
             return None
-
+    
     def _get_project_loc(self, project_name: str) -> list[dict]:
         """Get current LOC snapshots for project.
         
