@@ -96,9 +96,6 @@ class ActivityCollector:
             logger.warning(f"Project '{project_name}' has no metadata; skipping")
             return None
         
-        # Determine if this is first sync (include first_seen_at only then)
-        is_first_sync = self._is_first_project_sync(project_name)
-        
         # Get current LOC snapshots for this project
         current_loc = self._get_project_loc(project_name)
         
@@ -109,11 +106,10 @@ class ActivityCollector:
             logger.debug(f"Project '{project_name}' has no pending daily data")
             return None
         
-        # Build metadata object (only include first_seen_at on first sync)
+        # Build metadata object - always send both timestamps, backend handles differentiation
         metadata_obj = {}
-        if is_first_sync and metadata.get("first_seen_at"):
+        if metadata.get("first_seen_at"):
             metadata_obj["first_seen_at"] = metadata["first_seen_at"]
-        
         if metadata.get("last_active_at"):
             metadata_obj["last_active_at"] = metadata["last_active_at"]
         
@@ -189,39 +185,6 @@ class ActivityCollector:
         except Exception as e:
             logger.error(f"Error querying LOC for '{project_name}': {e}")
             return []
-
-    def _is_first_project_sync(self, project_name: str) -> bool:
-        """Check if this is the first time syncing this project.
-        
-        A project is "new" if it has pending data but hasn't been synced before.
-        We track this by checking if any of its daily data already has needs_sync=0.
-        
-        Args:
-            project_name: Project identifier
-            
-        Returns:
-            True if this is first sync, False if project has synced before
-        """
-        try:
-            # Check if ANY daily record for this project has already been synced (needs_sync=0)
-            cursor = self.db.conn.execute(
-                """
-                SELECT 1 FROM daily_project_languages
-                WHERE project_name = ? AND needs_sync = 0
-                LIMIT 1
-                """,
-                (project_name,),
-            )
-            
-            synced_record_exists = cursor.fetchone() is not None
-            
-            # If no synced records exist, this is the first sync
-            return not synced_record_exists
-            
-        except Exception as e:
-            logger.error(f"Error checking first sync for '{project_name}': {e}")
-            # Default to treating as first sync (safer; backend will handle duplicate first_seen_at)
-            return True
 
     def _collect_daily_buckets(self, project_name: str) -> list[dict]:
         """Collect all daily aggregates for a project.
