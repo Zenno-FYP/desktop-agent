@@ -49,10 +49,9 @@ block_evaluator:
 # Typical accuracy: 75-92% depending on heuristic (see confidence scores)
 # Note: Only used if ml_enabled=false OR ml prediction confidence < ml_confidence_threshold
 heuristics:
-  # FOCUSED: High typing + moderate clicks + few app switches
+  # FOCUSED: High typing + moderate clicks
   focused_kpm_min: 40         # Minimum KPM for focused work
   focused_cpm_min: 15         # Minimum CPM for focused work
-  focused_app_switches_max: 2 # Max app switches to still be "focused"
   focused_confidence: 0.92    # Confidence score for focused state
   
   # READING: Low typing + low clicks + active scrolling
@@ -61,18 +60,11 @@ heuristics:
   reading_scrolls_min: 5      # Min scrolls to count as reading
   reading_confidence: 0.80
   
-  # RESEARCH/DEBUGGING: Multiple app switches but all productive apps
-  research_app_switches_min: 3 # Min app switches for research/debugging
-  research_scrolls_min: 5      # Min scrolls to count as research
-  research_cpm_min: 5          # Min CPM for research activity
-  research_confidence: 0.85    # Confidence score for research state
-  
   # IDLE: High idle ratio (away from keyboard)
   idle_ratio_threshold: 0.5   # >50% idle = idle state
   idle_confidence: 0.85
   
-  # DISTRACTED: Multiple app switches with distraction apps
-  distracted_app_switches_min: 3 # Min app switches to be distracted
+  # DISTRACTED: Distraction apps or low activity
   distracted_confidence: 0.75
   distracted_immediate_confidence: 0.85  # With distraction app + low kpm
   distracted_immediate_kpm_max: 30
@@ -420,13 +412,41 @@ etl_pipeline:
   # Without this: Reports show "code.exe", "pycharm64.exe" (ugly, browser-unmappable)
   # With this: Reports show "VS Code", "PyCharm" (readable, consistent)
   app_name_mapping:
+    # IDEs & Editors
     code.exe: "VS Code"
-    chrome.exe: "Google Chrome"
-    msedge.exe: "Microsoft Edge"
-    windowsterminal.exe: "Terminal"
     pycharm64.exe: "PyCharm"
     studio64.exe: "Android Studio"
+    sublime.exe: "Sublime Text"
+    idea.exe: "IntelliJ IDEA"
+    
+    # Browsers
+    chrome.exe: "Google Chrome"
+    msedge.exe: "Microsoft Edge"
+    firefox.exe: "Firefox"
+    brave.exe: "Brave"
+    
+    # Communication & Social
+    whatsapp.exe: "WhatsApp"
+    telegram.exe: "Telegram"
+    slack.exe: "Slack"
+    teams.exe: "Microsoft Teams"
+    discord.exe: "Discord"
+    
+    # Media & Entertainment
+    spotify.exe: "Spotify"
+    netflix.exe: "Netflix"
+    vlc.exe: "VLC Media Player"
+    
+    # Development Tools
+    windowsterminal.exe: "Terminal"
     postman.exe: "Postman"
+    git.exe: "Git"
+    docker.exe: "Docker"
+    
+    # Office & Productivity
+    winword.exe: "Microsoft Word"
+    excel.exe: "Microsoft Excel"
+    powerpnt.exe: "Microsoft PowerPoint"
   
   # Language to skill mapping (detected_language → skill category)
   # Used by: Aggregate pipeline (skill category reporting and analysis)

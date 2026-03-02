@@ -176,7 +176,14 @@ class ETLPipeline:
             final_context = manually_verified_label if manually_verified_label else context_state
 
             # Clean the app name
-            clean_app_name = app_mapping.get(app_name.lower(), app_name.replace(".exe", "").title())
+            # First, try to find exact match in app_mapping (case-insensitive)
+            app_lower = app_name.lower()
+            if app_lower in app_mapping:
+                clean_app_name = app_mapping[app_lower]
+            else:
+                # Fallback: remove everything after the first dot and title-case
+                cleaned = app_name.split('.')[0]
+                clean_app_name = cleaned.title()
 
             # ==================== MIDNIGHT SPLITTING ====================
             segments = self._split_across_midnight_local(start_local, end_local)
