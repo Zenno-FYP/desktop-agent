@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zenno — Sign In</title>
+  <style>
+    /* ── Reset & Variables ──────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f0f13;
+      --surface:   #1a1a24;
+      --border:    #2a2a3a;
+      --text:      #e8e8f0;
+      --muted:     #8888a0;
+      --accent:    #6c5ce7;
+      --accent-h:  #7c6df7;
+      --danger:    #e74c3c;
+      --google:    #ea4335;
+      --github:    #f5f5f5;
+      --radius:    12px;
+      --transition: 0.2s ease;
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    /* ── Card Container ──────────────────────────────────────── */
+    .card {
+      width: 400px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 40px 36px;
+      position: relative;
+      box-shadow: 0 8px 32px rgba(0,0,0,.45);
+    }
+
+    /* ── Logo / Brand ────────────────────────────────────────── */
+    .brand {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    .brand h1 {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      background: linear-gradient(135deg, var(--accent), #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .brand p {
+      margin-top: 6px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    /* ── Inputs ──────────────────────────────────────────────── */
+    .field { margin-bottom: 16px; }
+    .field label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      margin-bottom: 6px;
+    }
+    .field input {
+      width: 100%;
+      padding: 12px 14px;
+      font-size: 14px;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      outline: none;
+      transition: border var(--transition);
+    }
+    .field input:focus { border-color: var(--accent); }
+    .field input::placeholder { color: #555568; }
+
+    /* ── Primary Button ──────────────────────────────────────── */
+    .btn-primary {
+      width: 100%;
+      padding: 13px;
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background var(--transition), transform var(--transition);
+      margin-top: 4px;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-h); }
+    .btn-primary:active:not(:disabled) { transform: scale(.98); }
+    .btn-primary:disabled { opacity: .55; cursor: not-allowed; }
+
+    /* ── Divider ─────────────────────────────────────────────── */
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 24px 0;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+    .divider::before,
+    .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* ── Social Buttons ──────────────────────────────────────── */
+    .social-row { display: flex; gap: 12px; }
+    .btn-social {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      transition: background var(--transition), border-color var(--transition);
+    }
+    .btn-social:hover:not(:disabled) {
+      background: rgba(255,255,255,.05);
+      border-color: #444;
+    }
+    .btn-social:disabled { opacity: .55; cursor: not-allowed; }
+    .btn-social svg { width: 18px; height: 18px; flex-shrink: 0; }
+
+    /* ── Error Toast ─────────────────────────────────────────── */
+    .error-msg {
+      display: none;
+      margin-top: 16px;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: #ffb3b3;
+      background: rgba(231,76,60,.12);
+      border: 1px solid rgba(231,76,60,.25);
+      border-radius: 8px;
+      text-align: center;
+      word-break: break-word;
+    }
+    .error-msg.show { display: block; }
+
+    /* ── Welcome Screen ──────────────────────────────────────── */
+    #welcome-screen { display: none; text-align: center; }
+    #welcome-screen.active { display: block; }
+    #signin-screen.hidden { display: none; }
+
+    .avatar {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: var(--accent);
+      margin: 0 auto 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 32px;
+      font-weight: 700;
+      color: #fff;
+      overflow: hidden;
+    }
+    .avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    #welcome-screen h2 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    #welcome-screen .subtitle {
+      font-size: 14px;
+      color: var(--muted);
+      margin-bottom: 32px;
+    }
+
+    .btn-run {
+      width: 100%;
+      padding: 16px;
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: .5px;
+      color: #fff;
+      background: linear-gradient(135deg, var(--accent), #a78bfa);
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: transform var(--transition), box-shadow var(--transition);
+      box-shadow: 0 4px 20px rgba(108,92,231,.35);
+    }
+    .btn-run:hover { transform: translateY(-1px); box-shadow: 0 6px 28px rgba(108,92,231,.5); }
+    .btn-run:active { transform: scale(.98); }
+
+    /* ── Spinner ──────────────────────────────────────────────── */
+    .spinner {
+      display: inline-block;
+      width: 18px; height: 18px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <!-- ────── SIGN-IN SCREEN ────── -->
+  <div id="signin-screen">
+    <div class="brand">
+      <h1>ZENNO</h1>
+      <p>Sign in to your account</p>
+    </div>
+
+    <div class="field">
+      <label for="email">Email</label>
+      <input id="email" type="email" placeholder="you@example.com" autocomplete="email" />
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" type="password" placeholder="••••••••" autocomplete="current-password" />
+    </div>
+
+    <button id="btn-signin" class="btn-primary" onclick="handleEmailSignIn()">
+      Sign In
+    </button>
+
+    <div class="divider">or continue with</div>
+
+    <div class="social-row">
+      <button class="btn-social" id="btn-google" onclick="handleGoogleSignIn()">
+        <!-- Google icon -->
+        <svg viewBox="0 0 24 24"><path fill="#ea4335" d="M12.001 4.8c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.39 0 3.4 2.6 1.39 6.41l3.98 3.09C6.45 6.63 8.98 4.8 12 4.8z"/><path fill="#4285f4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58l3.86 3c2.27-2.09 3.56-5.17 3.56-8.82z"/><path fill="#fbbc05" d="M5.37 14.28A7.2 7.2 0 0 1 4.8 12c0-.79.14-1.56.37-2.28L1.19 6.41A11.97 11.97 0 0 0 0 12c0 1.92.46 3.74 1.27 5.36l4.1-3.08z"/><path fill="#34a853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.11-4.07 1.11-3.02 0-5.55-1.83-6.63-4.48l-3.98 3.08C3.4 21.4 7.39 24 12 24z"/></svg>
+        Google
+      </button>
+      <button class="btn-social" id="btn-github" onclick="handleGithubSignIn()">
+        <!-- GitHub icon -->
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 .3a12 12 0 0 0-3.8 23.38c.6.11.82-.26.82-.58v-2.16c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.08-.73.08-.73 1.2.08 1.84 1.23 1.84 1.23 1.07 1.83 2.81 1.3 3.5 1 .1-.78.42-1.3.76-1.6-2.66-.31-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1-.33 3.3 1.23a11.5 11.5 0 0 1 6.02 0c2.28-1.56 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.62-5.49 5.92.43.37.82 1.1.82 2.22v3.29c0 .32.21.7.82.58A12 12 0 0 0 12 .3"/></svg>
+        GitHub
+      </button>
+    </div>
+
+    <div class="error-msg" id="error-msg"></div>
+  </div>
+
+  <!-- ────── WELCOME SCREEN ────── -->
+  <div id="welcome-screen">
+    <div class="avatar" id="avatar">Z</div>
+    <h2 id="welcome-name">Welcome!</h2>
+    <p class="subtitle">Welcome to Zenno</p>
+    <button class="btn-run" onclick="handleRunAgent()">
+      ▶&ensp;Run Agent
+    </button>
+  </div>
+</div>
+
+<!-- Firebase JS SDK (compat) via CDN -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+
+<script>
+  // ── State ──────────────────────────────────────────────────
+  let firebaseReady = false;
+  let busy = false;
+
+  // ── DOM refs ───────────────────────────────────────────────
+  const $signin      = document.getElementById('signin-screen');
+  const $welcome     = document.getElementById('welcome-screen');
+  const $email       = document.getElementById('email');
+  const $password    = document.getElementById('password');
+  const $btnSignin   = document.getElementById('btn-signin');
+  const $btnGoogle   = document.getElementById('btn-google');
+  const $btnGithub   = document.getElementById('btn-github');
+  const $errorMsg    = document.getElementById('error-msg');
+  const $avatar      = document.getElementById('avatar');
+  const $welcomeName = document.getElementById('welcome-name');
+
+  // ── Firebase init (called by Python via evaluate_js) ──────
+  function initFirebase() {
+    const cfg = window.__FIREBASE_CONFIG__;
+    if (!cfg || !cfg.apiKey) {
+      showError('Firebase configuration missing. Check your .env file.');
+      return;
+    }
+    if (!firebase.apps.length) {
+      firebase.initializeApp(cfg);
+    }
+    firebaseReady = true;
+    console.log('[Auth] Firebase initialized', cfg.projectId);
+
+    // If we came back from an OAuth redirect, complete login.
+    handleRedirectResult();
+  }
+
+  async function handleRedirectResult() {
+    try {
+      const result = await firebase.auth().getRedirectResult();
+      if (result && result.user) {
+        clearError();
+        setLoading(true);
+
+        const idToken = await result.user.getIdToken();
+        const refreshToken = result.user.refreshToken;
+        const email = result.user.email || '';
+        const displayName = result.user.displayName || (email ? email.split('@')[0] : 'User');
+
+        const providerId = (result.credential && result.credential.providerId) || '';
+        const provider = providerId.includes('github') ? 'github' : 'google';
+
+        await callBridge(idToken, provider, email, displayName, refreshToken);
+      }
+    } catch (err) {
+      console.error('[Auth] Redirect result error', err);
+      showError(friendlyFirebaseError(err.code, err.message));
+      setLoading(false);
+    }
+  }
+
+  // ── Helpers ────────────────────────────────────────────────
+  function showError(msg) {
+    $errorMsg.textContent = msg;
+    $errorMsg.classList.add('show');
+  }
+  function clearError() {
+    $errorMsg.classList.remove('show');
+    $errorMsg.textContent = '';
+  }
+  function setLoading(on) {
+    busy = on;
+    const spinner = on ? '<span class="spinner"></span>Signing in…' : 'Sign In';
+    $btnSignin.innerHTML = spinner;
+    $btnSignin.disabled = on;
+    $btnGoogle.disabled = on;
+    $btnGithub.disabled = on;
+  }
+
+  function showWelcome(user) {
+    $signin.classList.add('hidden');
+    $welcome.classList.add('active');
+
+    const name = user.name || user.email || 'User';
+    $welcomeName.textContent = `Welcome, ${name}!`;
+
+    if (user.profilePhoto) {
+      $avatar.innerHTML = `<img src="${user.profilePhoto}" alt="avatar" />`;
+    } else {
+      $avatar.textContent = (name.charAt(0) || 'Z').toUpperCase();
+    }
+  }
+
+  // ── Bridge call & result handling ──────────────────────────
+  async function callBridge(idToken, provider, email, displayName, refreshToken) {
+    try {
+      const raw = await window.pywebview.api.on_login_success(idToken, provider, email, displayName, refreshToken || null);
+      const result = JSON.parse(raw);
+      if (result.ok) {
+        showWelcome(result.user);
+      } else {
+        showError(result.error || 'Sign-in failed. Please try again.');
+      }
+    } catch (e) {
+      console.error('[Auth] Bridge error', e);
+      showError('Communication error. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ── Email / Password ──────────────────────────────────────
+  async function handleEmailSignIn() {
+    if (busy) return;
+    clearError();
+
+    const email = $email.value.trim();
+    const password = $password.value;
+
+    if (!email || !password) {
+      showError('Please enter your email and password.');
+      return;
+    }
+    if (!firebaseReady) {
+      showError('Firebase is not ready yet. Please wait a moment.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const cred = await firebase.auth().signInWithEmailAndPassword(email, password);
+      const idToken = await cred.user.getIdToken();
+      const refreshToken = cred.user.refreshToken;
+      const displayName = cred.user.displayName || email.split('@')[0];
+      await callBridge(idToken, 'password', email, displayName, refreshToken);
+    } catch (err) {
+      setLoading(false);
+      const msg = friendlyFirebaseError(err.code, err.message);
+      showError(msg);
+    }
+  }
+
+  // ── Google ─────────────────────────────────────────────────
+  async function handleGoogleSignIn() {
+    if (busy) return;
+    clearError();
+    if (!firebaseReady) { showError('Firebase is not ready yet.'); return; }
+
+    setLoading(true);
+    try {
+      // Prefer system browser for OAuth providers (more reliable SSO / MFA / passkeys).
+      if (!window.pywebview || !window.pywebview.api || !window.pywebview.api.external_oauth) {
+        throw new Error('External sign-in is not available in this environment.');
+      }
+      const raw = await window.pywebview.api.external_oauth('google');
+      const result = JSON.parse(raw);
+      if (result.ok) {
+        showWelcome(result.user);
+      } else {
+        showError(result.error || 'Sign-in failed. Please try again.');
+      }
+    } catch (err) {
+      setLoading(false);
+      showError(friendlyFirebaseError(err.code, err.message || String(err)));
+    }
+  }
+
+  // ── GitHub ─────────────────────────────────────────────────
+  async function handleGithubSignIn() {
+    if (busy) return;
+    clearError();
+    if (!firebaseReady) { showError('Firebase is not ready yet.'); return; }
+
+    setLoading(true);
+    try {
+      if (!window.pywebview || !window.pywebview.api || !window.pywebview.api.external_oauth) {
+        throw new Error('External sign-in is not available in this environment.');
+      }
+      const raw = await window.pywebview.api.external_oauth('github');
+      const result = JSON.parse(raw);
+      if (result.ok) {
+        showWelcome(result.user);
+      } else {
+        showError(result.error || 'Sign-in failed. Please try again.');
+      }
+    } catch (err) {
+      setLoading(false);
+      showError(friendlyFirebaseError(err.code, err.message || String(err)));
+    }
+  }
+
+  // ── Run Agent ──────────────────────────────────────────────
+  function handleRunAgent() {
+    window.pywebview.api.run_agent();
+  }
+
+  // ── Firebase error → friendly message ──────────────────────
+  function friendlyFirebaseError(code, rawMessage) {
+    const map = {
+      'auth/invalid-email':              'Invalid email address.',
+      'auth/user-disabled':              'This account has been disabled.',
+      'auth/user-not-found':             'No account found with this email.',
+      'auth/wrong-password':             'Incorrect password. Please try again.',
+      'auth/invalid-credential':         'Invalid credentials. Please try again.',
+      'auth/too-many-requests':          'Too many attempts. Please wait and try again.',
+      'auth/network-request-failed':     'Network error. Check your internet connection.',
+      'auth/popup-blocked':              'Popup blocked in this window. Switching to redirect sign-in…',
+      'auth/unauthorized-domain':         'This app origin is not authorized in Firebase. Ensure you are using http://localhost and that it is listed in Firebase Auth → Settings → Authorized domains.',
+      'auth/operation-not-allowed':       'This sign-in provider is not enabled in Firebase Console.',
+      'auth/account-exists-with-different-credential':
+        'An account already exists with this email using a different sign-in method.',
+      'auth/cancelled-popup-request':    'Sign-in cancelled.',
+      'auth/internal-error':             'An internal error occurred. Please try again.',
+    };
+    if (map[code]) return map[code];
+    return `Authentication error (${code || 'unknown'}): ${rawMessage || 'Please try again.'}`;
+  }
+
+  // ── Allow Enter key on password field ──────────────────────
+  $password.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleEmailSignIn();
+  });
+  $email.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $password.focus();
+  });
+</script>
+</body>
+</html>

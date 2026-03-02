@@ -3,7 +3,10 @@
 ## PHASE 1: Real-time Monitoring Settings
 
 # Sampling interval in seconds (how often to check active window)
-sample_interval_sec: 2
+# Note: Longer intervals reduce CPU and give more responsive input handling
+# Recommended: 3-4 seconds for responsive UI, 2 seconds for precise tracking
+# If experiencing mouse/keyboard lag, increase this value
+sample_interval_sec: 5
 
 # Flush interval in seconds (how often to flush logs to database)
 flush_interval_sec: 300  # configurable
@@ -33,6 +36,11 @@ behavioral_metrics:
 #   5. Retroactively tags all logs in block with prediction
 # Fallback: If config missing, defaults to 300 seconds
 block_duration_sec: 300
+
+# BlockEvaluator settings
+block_evaluator:
+  # Startup delay in seconds before first evaluation (allows logs to accumulate)
+  startup_delay_sec: 300  # 5 minutes default
 
 # Heuristic rule thresholds for context detection
 # Used by: ContextDetector.detect_context() decision tree
@@ -234,6 +242,8 @@ project_detector:
     .yml: "YAML"
     .xml: "XML"
     .md: "Markdown"
+    .db: "Database"
+    .log: "Logging"
 
   # Strictly bounded drive search fallback (only used when needed)
   # Used by: ProjectDetector._lightweight_drive_search()
@@ -335,7 +345,7 @@ esm_popup:
   
   # Rate limiting - prevent notification fatigue
   rate_limiting:
-    min_interval_hours: 0.5   # Minimum 30 minutes between popups
+    min_interval_hours: 0.25  # Minimum 15 minutes between popups
     max_per_day: 20           # Maximum 20 popups per day
   
   # UI Settings
@@ -459,13 +469,10 @@ etl_pipeline:
 # Safety: skip_directories prevents double-counting (node_modules duplicates source files) and scanning build artifacts
 # Fallback: If config missing, no language mapping (files unclassified), no directory skipping (slow scans)
 loc_scanner:
-  # How often to run background LOC scans (only when user idle)
+  # How often to run background LOC scans (hourly)
   # Used by: DesktopAgent._check_idle_and_scan_loc()
+  # Scans all projects that have been active since their last scan
   scan_interval_sec: 3600
-
-  # Idle ratio required to trigger a scan (idle_sec / session_duration_sec)
-  # Used by: DesktopAgent._check_idle_and_scan_loc()
-  idle_ratio_threshold: 0.3
 
   # File extensions → language mapping (for code volume tracking)
   language_extensions:
@@ -599,6 +606,6 @@ db:
 #   - PRODUCTION: level=INFO (only important events, small log files)
 # Fallback: If config missing, defaults: level=WARNING, file=stderr only
 logging:
-  level: INFO                # DEBUG, INFO, WARNING, ERROR
+  level: ERROR                # DEBUG, INFO, WARNING, ERROR
   file: ./logs/agent.log
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

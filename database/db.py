@@ -1,7 +1,9 @@
 """SQLite database layer for agent."""
+import os
 import logging
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -63,6 +65,50 @@ class Database:
             if self.conn:
                 self.conn.close()
                 self.conn = None
+
+    def reset_database(self, *, recreate_tables: bool = True) -> None:
+        """Delete the SQLite database file and recreate an empty schema.
+
+        This is destructive and will remove all locally stored agent data.
+        It also deletes WAL/SHM sidecar files.
+
+        Args:
+            recreate_tables: if True, reconnects and calls create_tables().
+        """
+        with self._lock:
+            # Ensure connection is closed before deleting.
+            if self.conn:
+                try:
+                    self.conn.close()
+                finally:
+                    self.conn = None
+
+            db_file = self.db_path
+            sidecars = [
+                db_file,
+                db_file.with_suffix(db_file.suffix + "-wal"),
+                db_file.with_suffix(db_file.suffix + "-shm"),
+            ]
+
+            # Windows can hold locks briefly; retry a few times.
+            last_err: Exception | None = None
+            for _ in range(5):
+                try:
+                    for p in sidecars:
+                        if p.exists():
+                            os.remove(str(p))
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    time.sleep(0.2)
+
+            if last_err is not None:
+                raise RuntimeError(f"Failed to reset database at {db_file}: {last_err}")
+
+            if recreate_tables:
+                self.connect()
+                self.create_tables()
 
     def create_tables(self):
         """Create all tables and indexes if they don't exist."""
@@ -194,6 +240,20 @@ class Database:
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_pls_needs_sync ON project_loc_snapshots(needs_sync)",
+
+            """
+            CREATE TABLE IF NOT EXISTS local_user (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                backend_user_id TEXT NOT NULL,
+                email TEXT NOT NULL,
+                name TEXT NOT NULL,
+                profile_photo TEXT,
+                is_verified INTEGER NOT NULL DEFAULT 0,
+                role TEXT NOT NULL DEFAULT 'user',
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """,
         ]
 
         with self._lock:
@@ -1163,3 +1223,174 @@ class Database:
                     SET needs_sync = 0
                     WHERE project_name = ? AND language_name = ?
                 ''', (project_name, language_name))
+
+    # ── Local User (authentication) ──────────────────────────────────
+
+    def upsert_local_user(self, user: dict):
+        """Insert or replace the single local user row.
+
+        Args:
+            user: dict with keys matching the backend user response:
+                  _id, email, name, profilePhoto, isVerified, role,
+                  createdAt, updatedAt
+        """
+        with self._lock:
+            with self.conn:
+                self.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO local_user
+                        (id, backend_user_id, email, name, profile_photo,
+                         is_verified, role, created_at, updated_at)
+                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user.get('_id', ''),
+                        user.get('email', ''),
+                        user.get('name', ''),
+                        user.get('profilePhoto'),
+                        1 if user.get('isVerified') else 0,
+                        user.get('role', 'user'),
+                        user.get('createdAt'),
+                        user.get('updatedAt'),
+                    ),
+                )
+
+    def get_local_user(self) -> dict | None:
+        """Return the stored local user or None."""
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT backend_user_id, email, name, profile_photo, "
+                "is_verified, role, created_at, updated_at "
+                "FROM local_user WHERE id = 1"
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                '_id': row[0],
+                'email': row[1],
+                'name': row[2],
+                'profilePhoto': row[3],
+                'isVerified': bool(row[4]),
+                'role': row[5],
+                'createdAt': row[6],
+                'updatedAt': row[7],
+            }
+
+    def clear_local_user(self):
+        """Delete the local user row (logout)."""
+        with self._lock:
+            with self.conn:
+                self.conn.execute("DELETE FROM local_user WHERE id = 1")
+
+    # ── Sync Operations (for activity sync to backend) ──────────────────
+
+    def has_pending_sync(self) -> bool:
+        """Check if any aggregated table has pending sync data (needs_sync = 1).
+        
+        Fast check using EXISTS to avoid scanning large tables.
+        
+        Returns:
+            True if any record has needs_sync = 1, False otherwise
+        """
+        with self._lock:
+            # Check any aggregated table for pending data
+            cursor = self.conn.execute('''
+                SELECT 1 FROM daily_project_languages WHERE needs_sync = 1
+                UNION ALL
+                SELECT 1 FROM daily_project_apps WHERE needs_sync = 1
+                UNION ALL
+                SELECT 1 FROM daily_project_skills WHERE needs_sync = 1
+                UNION ALL
+                SELECT 1 FROM daily_project_context WHERE needs_sync = 1
+                UNION ALL
+                SELECT 1 FROM daily_project_behavior WHERE needs_sync = 1
+                UNION ALL
+                SELECT 1 FROM project_loc_snapshots WHERE needs_sync = 1
+                LIMIT 1
+            ''')
+            return cursor.fetchone() is not None
+
+    def get_projects_pending_sync(self) -> list[str]:
+        """Get list of project names with pending sync data (needs_sync = 1).
+        
+        Returns:
+            List of project names that have aggregates waiting to sync
+        """
+        with self._lock:
+            cursor = self.conn.execute('''
+                SELECT DISTINCT project_name
+                FROM daily_project_languages
+                WHERE needs_sync = 1
+                ORDER BY project_name
+            ''')
+            return [row[0] for row in cursor.fetchall()]
+
+    def mark_project_synced(self, project_name: str, date: str | None = None):
+        """Mark aggregates as synced (needs_sync = 0) for a project.
+        
+        Args:
+            project_name: Project identifier
+            date: Optional specific date (YYYY-MM-DD). If None, marks entire project.
+        """
+        with self._lock:
+            with self.conn:
+                if date is None:
+                    # Mark all dates for this project
+                    self.conn.execute('''
+                        UPDATE daily_project_languages
+                        SET needs_sync = 0
+                        WHERE project_name = ?
+                    ''', (project_name,))
+                    self.conn.execute('''
+                        UPDATE daily_project_apps
+                        SET needs_sync = 0
+                        WHERE project_name = ?
+                    ''', (project_name,))
+                    self.conn.execute('''
+                        UPDATE daily_project_skills
+                        SET needs_sync = 0
+                        WHERE project_name = ?
+                    ''', (project_name,))
+                    self.conn.execute('''
+                        UPDATE daily_project_context
+                        SET needs_sync = 0
+                        WHERE project_name = ?
+                    ''', (project_name,))
+                    self.conn.execute('''
+                        UPDATE daily_project_behavior
+                        SET needs_sync = 0
+                        WHERE project_name = ?
+                    ''', (project_name,))
+                    self.conn.execute('''
+                        UPDATE project_loc_snapshots
+                        SET needs_sync = 0
+                        WHERE project_name = ?
+                    ''', (project_name,))
+                else:
+                    # Mark only specific date
+                    self.conn.execute('''
+                        UPDATE daily_project_languages
+                        SET needs_sync = 0
+                        WHERE project_name = ? AND date = ?
+                    ''', (project_name, date))
+                    self.conn.execute('''
+                        UPDATE daily_project_apps
+                        SET needs_sync = 0
+                        WHERE project_name = ? AND date = ?
+                    ''', (project_name, date))
+                    self.conn.execute('''
+                        UPDATE daily_project_skills
+                        SET needs_sync = 0
+                        WHERE project_name = ? AND date = ?
+                    ''', (project_name, date))
+                    self.conn.execute('''
+                        UPDATE daily_project_context
+                        SET needs_sync = 0
+                        WHERE project_name = ? AND date = ?
+                    ''', (project_name, date))
+                    self.conn.execute('''
+                        UPDATE daily_project_behavior
+                        SET needs_sync = 0
+                        WHERE project_name = ? AND date = ?
+                    ''', (project_name, date))

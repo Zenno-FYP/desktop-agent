@@ -4,7 +4,7 @@ Zenno Desktop Agent - Entry Point (Phase 1: Core Activity Detection)
 import time
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from config.config import Config
@@ -16,6 +16,8 @@ from monitor.project_detector import ProjectDetector
 from analyze.context_detector import ContextDetector
 from analyze.block_evaluator import BlockEvaluator
 from aggregate.loc_scanner import LOCScanner
+from aggregate.etl_pipeline import ETLPipeline
+from sync.activity_syncer import ActivitySyncer
 
 
 class ActivitySession:
@@ -70,6 +72,12 @@ class ActivitySession:
         start_dt = datetime.fromisoformat(self.start_time)
         end_dt = datetime.fromisoformat(end_time)
         duration_sec = int((end_dt - start_dt).total_seconds())
+        # Ensure minimum duration of 1 second to avoid validation errors
+        if duration_sec <= 0:
+            duration_sec = 1
+            # Adjust end_time to be 1 second after start_time
+            end_dt = start_dt + timedelta(seconds=1)
+            end_time = end_dt.isoformat()
         
         # Get behavioral metrics
         metrics = self.metrics.get_metrics()
@@ -149,6 +157,9 @@ class DesktopAgent:
         self.config = Config(config_path) if config_path else Config()
         self._setup_logging()
         self.sample_interval = self.config.get("sample_interval_sec", 2)
+        # Note: sample_interval of 2 seconds might cause input lag
+        # Consider increasing to 3-4 seconds if experiencing mouse/keyboard stutter
+        # Longer interval = more responsive input, but less frequent activity tracking
         self.flush_interval = self.config.get("flush_interval_sec", 300)
         self.idle_threshold_sec = self.config.get("idle_threshold_sec", 10)
         self.click_debounce_ms = self.config.get("behavioral_metrics.click_debounce_ms", 50)
@@ -180,11 +191,20 @@ class DesktopAgent:
         self.block_evaluator = BlockEvaluator(self.db, self.context_detector, config=self.config, block_duration_sec=block_duration_sec)
         self.block_evaluator.start()
         
-        # Initialize Phase 4: LOC Scanner (triggered on idle time)
+        # Initialize Phase 4: LOC Scanner (triggered hourly)
         self.loc_scanner = LOCScanner(self.db, config=self.config)
         self.loc_scan_interval_sec = self.config.get("loc_scanner.scan_interval_sec", 3600)  # 1 hour default
-        self.loc_scan_idle_ratio_threshold = self.config.get("loc_scanner.idle_ratio_threshold", 0.3)
-        self.last_loc_scan_time = 0
+        self.last_loc_scan_time = time.time()  # Initialize to now; first scan waits 1 hour
+        
+        # Initialize ETL Pipeline (aggregation; triggered every 15 minutes)
+        self.etl_pipeline = ETLPipeline(self.db, config=self.config)
+        self.etl_interval_sec = self.config.get("etl_pipeline.interval_sec", 900)  # 15 min default
+        self.last_etl_time = time.time()  # Initialize to now; first sync waits 15 minutes
+        
+        # Initialize Activity Syncer (send aggregates to backend after ETL)
+        self.activity_syncer = ActivitySyncer(self.db)
+        self.sync_interval_sec = self.config.get("sync.interval_sec", 900)  # 15 min default (mirrors ETL)
+        self.last_sync_time = time.time()  # Initialize to now; first sync waits 15 minutes
         
         # Session tracking
         self.current_session = None
@@ -285,12 +305,15 @@ class DesktopAgent:
                             self.current_session = ActivitySession(
                                 self.current_app, window_title,
                                 idle_threshold_sec=self.idle_threshold_sec,
-                                click_debounce_ms=self.click_debounce_ms,
+                                metrics=self.metrics,
                                 config=self.config,
                             )
                 
                 # Check idle and trigger LOC scanning
                 self._check_idle_and_scan_loc()
+                
+                # Run ETL pipeline and sync (every 15 minutes)
+                self._run_etl_and_sync()
                 
                 time.sleep(self.sample_interval)
         
@@ -445,35 +468,62 @@ class DesktopAgent:
             self.logger.exception("[Error] Failed to flush session")
 
     def _check_idle_and_scan_loc(self):
-        """Check if user is idle and trigger LOC scanning periodically.
+        """Trigger LOC scanning periodically (every hour).
         
-        LOC scanning is CPU-intensive, so only run when:
-        1. User is idle (no activity detected)
-        2. Enough time has passed since last scan (default 1 hour)
+        Scans all projects that have been active since their last scan.
+        Runs on a timer basis, not dependent on user idle status.
         """
         current_time = time.time()
         
-        # Check if ready to scan based on interval
+        # Check if enough time has passed since last scan
         if current_time - self.last_loc_scan_time < self.loc_scan_interval_sec:
-            return
+            return  # Not yet, skip
         
-        # Check if user is currently idle
-        if not self.current_session:
-            return
+        try:
+            self.logger.info("[LOCScanner] Starting background LOC scan...")
+            self.loc_scanner.scan_all_projects()
+            self.last_loc_scan_time = current_time
+            self.logger.info("[LOCScanner] Completed LOC scan")
+        except Exception as e:
+            self.logger.exception("[Error] LOC scanning failed")
+
+    def _run_etl_and_sync(self):
+        """Run ETL pipeline and activity sync periodically (every 15 minutes).
         
-        idle_metrics = self.current_session.idle_detector.get_idle_metrics()
-        idle_duration = idle_metrics.get('idle_duration_sec', 0)
-        session_duration = int((datetime.utcnow() - datetime.fromisoformat(self.current_session.start_time)).total_seconds())
+        Flow:
+        1. Run ETL: aggregate raw logs into daily project tables
+        2. Run Sync: send pending aggregates to backend via activity sync API
         
-        # Only scan if idle for at least configured ratio of the current session
-        if idle_duration > session_duration * float(self.loc_scan_idle_ratio_threshold):
-            try:
-                self.logger.info("[LOCScanner] User idle, starting background LOC scan...")
-                self.loc_scanner.scan_all_projects()
-                self.last_loc_scan_time = current_time
-                self.logger.info("[LOCScanner] Completed LOC scan")
-            except Exception as e:
-                self.logger.exception("[Error] LOC scanning failed")
+        Both are optional; failures don't block agent operation.
+        """
+        current_time = time.time()
+        
+        # Check if enough time has passed since last ETL
+        if current_time - self.last_etl_time < self.etl_interval_sec:
+            return  # Not yet, skip
+        
+        try:
+            # ===== ETL PHASE =====
+            self.logger.info("[ETL] Starting ETL pipeline...")
+            self.etl_pipeline.run()
+            self.logger.info("[ETL] Completed ETL aggregation")
+            
+            # ===== SYNC PHASE =====
+            # After ETL completes, check if there's pending data to sync
+            if self.db.has_pending_sync():
+                self.logger.info("[Sync] Pending data detected; starting activity sync...")
+                success = self.activity_syncer.sync_activity()
+                if success:
+                    self.logger.info("[Sync] Activity sync completed successfully")
+                else:
+                    self.logger.warning("[Sync] Activity sync failed; will retry next cycle")
+            else:
+                self.logger.debug("[Sync] No pending data to sync")
+            
+            self.last_etl_time = current_time
+            
+        except Exception as e:
+            self.logger.exception("[Error] ETL/Sync cycle failed")
 
     def _shutdown(self):
         """Graceful shutdown."""
@@ -485,6 +535,18 @@ class DesktopAgent:
         # Flush final session
         if self.current_session:
             self._flush_session()
+        
+        # Final ETL if needed
+        try:
+            self.logger.info("[Agent] Running final ETL before shutdown...")
+            self.etl_pipeline.run()
+            
+            # Final sync if pending data exists
+            if self.db.has_pending_sync():
+                self.logger.info("[Agent] Syncing pending data before shutdown...")
+                self.activity_syncer.sync_activity()
+        except Exception as e:
+            self.logger.warning(f"[Agent] Final ETL/sync failed: {e}")
 
         # Stop global listeners.
         self.metrics.stop_listening()
