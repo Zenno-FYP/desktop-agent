@@ -17,7 +17,7 @@ class ProjectAggregator:
         """Get current local time as formatted string."""
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    def generate_sql(self, transformed_logs: list) -> list:
+    def generate_upserts(self, transformed_logs: list) -> list:
         """Generate UPSERT commands for unique projects in the batch.
         
         Implements Path Superiority Rule:
@@ -27,7 +27,7 @@ class ProjectAggregator:
         Args:
             transformed_logs: List of transformed log dicts from ETLPipeline.
                             Keys: log_id, date, app_name, project_name, project_path,
-                                  language_name, context_state, duration_sec, end_time
+                                  language_name, context_state, duration_sec, end_time_local
         
         Returns:
             List of (query, params) tuples ready to execute in a transaction
@@ -37,7 +37,7 @@ class ProjectAggregator:
         for log in transformed_logs:
             p_name = log["project_name"]
             p_path = log["project_path"]
-            end_time = log["end_time"]
+            end_time = log["end_time_local"]
             
             # Only track real projects (not __unassigned__)
             if p_name and p_name != "__unassigned__":
