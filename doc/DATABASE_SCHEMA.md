@@ -132,28 +132,25 @@ Break down of time spent per application per project per day.
 **Primary Key:** `(date, project_name, app_name)` — one row per app per project per day
 
 **Indexes:**
-- `idx_dpa_needs_sync` on `(needs_sync)`
-
-**Foreign Key:** `project_name` → `projects.project_name` (ON DELETE CASCADE)
-
 ---
 
-### `daily_project_skills`
+### `project_skills`
 
-Break down of inferred skills (e.g., `testing`, `refactoring`, `documentation`) per project per day.
+Cumulative skills breakdown per project (similar to `project_loc_snapshots` for language experience).
+Tracks total time spent on each skill across the entire project timeline.
 
 | Column | Type | Default | Description |
 |--------|------|---------|-------------|
-| `date` | TEXT | NOT NULL | Date (YYYY-MM-DD format) |
 | `project_name` | TEXT | NOT NULL | Project identifier; foreign key to `projects(project_name)` |
-| `skill_name` | TEXT | NOT NULL | Skill label (inferred from typing patterns, file types, context) |
-| `duration_sec` | INTEGER | 0 | Total seconds spent on this skill on this project on this date |
-| `needs_sync` | INTEGER | 1 | Flag (0=synced, 1=pending) |
+| `skill_name` | TEXT | NOT NULL | Skill label (inferred from language, file types, context) |
+| `duration_sec` | INTEGER | 0 | Total cumulative seconds spent on this skill on this project |
+| `last_updated_at` | TEXT | NOT NULL | ISO timestamp of last update |
+| `needs_sync` | INTEGER | 1 | Sync flag: 1 = pending cloud sync, 0 = synced |
 
-**Primary Key:** `(date, project_name, skill_name)` — one row per skill per project per day
+**Primary Key:** `(project_name, skill_name)` — one row per skill per project (cumulative)
 
 **Indexes:**
-- `idx_dps_needs_sync` on `(needs_sync)`
+- `idx_ps_needs_sync` on `(needs_sync)`
 
 **Foreign Key:** `project_name` → `projects.project_name` (ON DELETE CASCADE)
 
@@ -272,7 +269,7 @@ ORDER BY lines_of_code DESC;
 
 ## Notes
 
-- All timestamps are in **ISO 8601 format** (UTC): `YYYY-MM-DDTHH:MM:SS.ffffff`
+- All timestamps are in **ISO 8601 format** (local time): `YYYY-MM-DDTHH:MM:SS.ffffff` (no timezone suffix)
 - Dates in aggregated tables use **YYYY-MM-DD** format (no time component)
 - Duration columns (`duration_sec`) are measured in **seconds**
 - The `needs_sync` flag is a **lazy sync marker** — records are only pushed to the backend when flagged as needing sync

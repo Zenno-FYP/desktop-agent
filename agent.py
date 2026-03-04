@@ -39,9 +39,10 @@ class ActivitySession:
             window_title: Window title
             pid: Process ID (optional)
             idle_threshold_sec: Seconds of inactivity before marking as idle (default 10)
-            click_debounce_ms: Ignore clicks closer than this (ms) - default 50
+            config: Configuration instance
         """
-        self.start_time = datetime.utcnow().isoformat()
+        # Store local time (system's current timezone)
+        self.start_time = datetime.now().isoformat()
         self.app_name = app_name
         self.window_title = window_title
         self.pid = pid
@@ -68,7 +69,8 @@ class ActivitySession:
         Returns:
             dict with complete session data ready for database insertion
         """
-        end_time = datetime.utcnow().isoformat()
+        # Get local time
+        end_time = datetime.now().isoformat()
         start_dt = datetime.fromisoformat(self.start_time)
         end_dt = datetime.fromisoformat(end_time)
         duration_sec = int((end_dt - start_dt).total_seconds())
@@ -342,10 +344,9 @@ class DesktopAgent:
             
             if row:
                 project_name, end_time_str = row
-                # Parse the end_time ISO format
+                # Parse the end_time ISO format (stored as local time)
                 end_dt = datetime.fromisoformat(end_time_str)
-                current_dt = datetime.utcnow()
-                elapsed_sec = (current_dt - end_dt).total_seconds()
+                elapsed_sec = (datetime.now() - end_dt).total_seconds()
                 
                 # If less than TTL, restore to sticky state
                 if elapsed_sec <= self.sticky_ttl_sec:
@@ -378,8 +379,7 @@ class DesktopAgent:
         
         try:
             last_seen_dt = datetime.fromisoformat(self.sticky_last_seen)
-            current_dt = datetime.utcnow()
-            elapsed_sec = (current_dt - last_seen_dt).total_seconds()
+            elapsed_sec = (datetime.now() - last_seen_dt).total_seconds()
             return elapsed_sec <= self.sticky_ttl_sec
         except Exception:
             return False

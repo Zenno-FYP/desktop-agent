@@ -9,7 +9,7 @@ Flow:
 2. TRANSFORM: Run once:
     - Project attribution (trust raw logs; assign "__unassigned__" when missing)
     - Manual context override (use manually_verified_label when present)
-    - Midnight splitting (convert UTC to local dates, split overnight boundaries)
+    - Midnight splitting (split overnight boundaries in local time)
 3. DELEGATE: Pass clean batch to each aggregator → get SQL commands
 4. LOAD: Execute all SQL commands in ONE atomic transaction
 """
@@ -21,32 +21,32 @@ from collections import defaultdict
 class ETLPipeline:
     """The Maestro: orchestrates extraction, transformation, and delegation."""
 
-    def __init__(self, db, config=None, local_tz_offset_hours=None):
+    def __init__(self, db, config=None):
         """Initialize ETL pipeline.
         
         Args:
             db: Database instance (from database/db.py)
             config: Config instance (from config/config.py) - optional but recommended
-            local_tz_offset_hours: Hours offset from UTC for local date bucketing (e.g., -5 for EST)
-                                  If None, will be read from config under etl_pipeline.local_tz_offset_hours
         """
         self.db = db
         self.config = config
-        if local_tz_offset_hours is None and config is not None:
-            etl_cfg = config.get("etl_pipeline", {})
-            local_tz_offset_hours = etl_cfg.get("local_tz_offset_hours", 0)
-
-        self.local_tz_offset = local_tz_offset_hours or 0
         
         # Read configuration
         if config:
             etl_cfg = config.get('etl_pipeline', {})
             self.app_name_mapping = etl_cfg.get('app_name_mapping', {})
             self.language_to_skill_mapping = etl_cfg.get('language_to_skill_mapping', {})
+            
+            # Browser detection config
+            browser_cfg = etl_cfg.get('browser_detection', {})
+            self.browsers = set(browser_cfg.get('browsers', []))
+            self.service_keywords = browser_cfg.get('service_keywords', {})
         else:
             # Fallback defaults if no config provided
             self.app_name_mapping = {}
             self.language_to_skill_mapping = {}
+            self.browsers = set()
+            self.service_keywords = {}
         
         # Initialize aggregators
         from aggregate.project_aggregator import ProjectAggregator
@@ -64,6 +64,10 @@ class ETLPipeline:
             ContextAggregator(),
             BehaviorAggregator(),
         ]
+    
+    def _get_local_time(self) -> str:
+        """Get current local time as formatted string (YYYY-MM-DD HH:MM:SS)."""
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     def run(self):
         """Execute the full ETL pipeline.
@@ -98,13 +102,13 @@ class ETLPipeline:
         Returns:
             List of tuples: (log_id, start_time, end_time, app_name, project_name, project_path,
                            detected_language, context_state, manually_verified_label, duration_sec, typing_intensity,
-                           mouse_click_rate, mouse_scroll_events, idle_duration_sec)
+                           mouse_click_rate, mouse_scroll_events, idle_duration_sec, active_file)
         """
         cursor = self.db.conn.execute(
             """
             SELECT log_id, start_time, end_time, app_name, project_name, project_path,
                    detected_language, context_state, manually_verified_label, duration_sec, typing_intensity,
-                   mouse_click_rate, mouse_scroll_events, idle_duration_sec
+                   mouse_click_rate, mouse_scroll_events, idle_duration_sec, active_file
             FROM raw_activity_logs
             WHERE is_aggregated = 0
               AND context_state IS NOT NULL
@@ -118,7 +122,8 @@ class ETLPipeline:
         
         SIMPLIFIED (Shift-Left Sticky Project):
         1. Trust database project_name (already filled by upstream collector logic)
-        2. Midnight splitting (UTC → local dates, split overnight boundaries)
+        2. Midnight splitting (split overnight boundaries in local time)
+        3. Browser keyword extraction (for Chrome, Firefox, etc., extract active service from URL)
         
         NOTE: Sticky project logic has been moved to collection phase (agent.py).
         If project_name is in raw_activity_logs, it is mathematically correct.
@@ -129,7 +134,7 @@ class ETLPipeline:
             
         Returns:
             List of dicts with keys: log_id, date, app_name, project_name, language_name,
-                                     context_state, duration_sec, end_time_utc
+                                     context_state, duration_sec, end_time
                                      AND pre-split into local-date segments
         """
         # App name mapping dictionary for cleaning .exe files (from config)
@@ -152,14 +157,11 @@ class ETLPipeline:
             mouse_click_rate,
             mouse_scroll_events,
             idle_duration_sec,
+            active_file,
         ) in raw_logs:
-            # Parse timestamps (UTC)
-            start_utc = datetime.fromisoformat(start_time_iso)
-            end_utc = datetime.fromisoformat(end_time_iso)
-
-            # Convert to local time for date bucketing
-            start_local = start_utc + timedelta(hours=self.local_tz_offset)
-            end_local = end_utc + timedelta(hours=self.local_tz_offset)
+            # Parse timestamps (already in local time)
+            start_local = datetime.fromisoformat(start_time_iso)
+            end_local = datetime.fromisoformat(end_time_iso)
 
             # ==================== PROJECT RESOLUTION ====================
             # Trust the database! The upstream tracker already handled the 15-min TTL.
@@ -176,7 +178,17 @@ class ETLPipeline:
             final_context = manually_verified_label if manually_verified_label else context_state
 
             # Clean the app name
-            clean_app_name = app_mapping.get(app_name.lower(), app_name.replace(".exe", "").title())
+            # First, try to find exact match in app_mapping (case-insensitive)
+            app_lower = app_name.lower()
+            if app_lower in app_mapping:
+                clean_app_name = app_mapping[app_lower]
+            else:
+                # Fallback: remove everything after the first dot and title-case
+                cleaned = app_name.split('.')[0]
+                clean_app_name = cleaned.title()
+            
+            # Browser keyword extraction: if it's a browser, try to extract service from URL
+            clean_app_name = self._extract_browser_app_name(clean_app_name, active_file)
 
             # ==================== MIDNIGHT SPLITTING ====================
             segments = self._split_across_midnight_local(start_local, end_local)
@@ -184,9 +196,6 @@ class ETLPipeline:
             for seg_start, seg_end in segments:
                 date_str = seg_start.strftime("%Y-%m-%d")
                 seg_duration = int((seg_end - seg_start).total_seconds())
-                
-                # Convert segment end back to UTC for accurate DB timestamps
-                seg_end_utc = seg_end - timedelta(hours=self.local_tz_offset)
 
                 transformed.append({
                     "log_id": log_id,
@@ -197,7 +206,7 @@ class ETLPipeline:
                     "language_name": language_name,
                     "context_state": final_context,
                     "duration_sec": seg_duration,
-                    "end_time_utc": seg_end_utc.strftime("%Y-%m-%d %H:%M:%S"),
+                    "end_time_local": seg_end.strftime("%Y-%m-%d %H:%M:%S"),
                     "typing_intensity": typing_intensity,
                     "mouse_click_rate": mouse_click_rate,
                     "mouse_scroll_events": mouse_scroll_events,
@@ -205,6 +214,43 @@ class ETLPipeline:
                 })
 
         return transformed
+
+    def _extract_browser_app_name(self, app_name: str, active_file: str) -> str:
+        """Extract service name from browser URL/tab if app is a browser.
+        
+        For browsers configured in browser_detection.browsers, checks active_file (URL/tab name)
+        for keywords matching known services. If found, returns service name as app_name.
+        Otherwise returns original app_name (e.g., "Browser", "Chrome").
+        
+        Keywords and browsers are loaded from config (etl_pipeline.browser_detection).
+        This allows easy addition of new browsers and services without code changes.
+        
+        Args:
+            app_name: Cleaned app name (e.g., "Chrome", "Browser")
+            active_file: URL/tab name from browser (can be None)
+            
+        Returns:
+            Service name if keyword found, otherwise original app_name
+        """
+        # Check if this is a known browser (case-insensitive)
+        app_lower = app_name.lower()
+        if app_lower not in self.browsers:
+            return app_name
+        
+        # If no active_file, can't extract service name
+        if not active_file:
+            return app_name
+        
+        active_lower = active_file.lower()
+        
+        # Search for keywords in active_file (case-insensitive)
+        # service_keywords dict has: keyword → display_name
+        for keyword, display_name in self.service_keywords.items():
+            if keyword in active_lower:
+                return display_name
+        
+        # No keyword found, return original app_name (browser name)
+        return app_name
 
     def _split_across_midnight_local(self, start_local, end_local):
         """Split a time interval across local midnight boundaries.
@@ -244,7 +290,7 @@ class ETLPipeline:
             with self.db.conn:
                 # Ensure __unassigned__ project exists before inserting aggregated data
                 # (needed for foreign key constraints in aggregation tables)
-                now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                now = self._get_local_time()
                 self.db.conn.execute(
                     """
                     INSERT OR IGNORE INTO projects (project_name, project_path, first_seen_at, last_active_at, needs_sync)
@@ -260,7 +306,7 @@ class ETLPipeline:
                 # Mark all raw logs as aggregated
                 log_ids = list(set(log["log_id"] for log in transformed_logs))
                 if log_ids:
-                    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                    now = self._get_local_time()
                     placeholders = ",".join("?" * len(log_ids))
                     self.db.conn.execute(
                         f"""

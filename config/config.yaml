@@ -49,10 +49,9 @@ block_evaluator:
 # Typical accuracy: 75-92% depending on heuristic (see confidence scores)
 # Note: Only used if ml_enabled=false OR ml prediction confidence < ml_confidence_threshold
 heuristics:
-  # FOCUSED: High typing + moderate clicks + few app switches
+  # FOCUSED: High typing + moderate clicks
   focused_kpm_min: 40         # Minimum KPM for focused work
   focused_cpm_min: 15         # Minimum CPM for focused work
-  focused_app_switches_max: 2 # Max app switches to still be "focused"
   focused_confidence: 0.92    # Confidence score for focused state
   
   # READING: Low typing + low clicks + active scrolling
@@ -61,18 +60,11 @@ heuristics:
   reading_scrolls_min: 5      # Min scrolls to count as reading
   reading_confidence: 0.80
   
-  # RESEARCH/DEBUGGING: Multiple app switches but all productive apps
-  research_app_switches_min: 3 # Min app switches for research/debugging
-  research_scrolls_min: 5      # Min scrolls to count as research
-  research_cpm_min: 5          # Min CPM for research activity
-  research_confidence: 0.85    # Confidence score for research state
-  
   # IDLE: High idle ratio (away from keyboard)
   idle_ratio_threshold: 0.5   # >50% idle = idle state
   idle_confidence: 0.85
   
-  # DISTRACTED: Multiple app switches with distraction apps
-  distracted_app_switches_min: 3 # Min app switches to be distracted
+  # DISTRACTED: Distraction apps or low activity
   distracted_confidence: 0.75
   distracted_immediate_confidence: 0.85  # With distraction app + low kpm
   distracted_immediate_kpm_max: 30
@@ -219,11 +211,8 @@ project_detector:
   # Impact: Stored in raw_activity_logs.language for skill tracking, aggregation
   # Fallback: If extension not found, returns None (no default language)
   language_extensions:
+    # Backend Languages
     .py: "Python"
-    .js: "JavaScript"
-    .ts: "TypeScript"
-    .jsx: "React"
-    .tsx: "React"
     .java: "Java"
     .cpp: "C++"
     .c: "C"
@@ -232,18 +221,90 @@ project_detector:
     .rs: "Rust"
     .rb: "Ruby"
     .php: "PHP"
-    .swift: "Swift"
-    .kt: "Kotlin"
+    .pl: "Perl"
+    .scala: "Scala"
+    .groovy: "Groovy"
+    .lua: "Lua"
+    
+    # Frontend Languages
+    .js: "JavaScript"
+    .ts: "TypeScript"
+    .jsx: "React"
+    .tsx: "React"
+    .vue: "Vue"
+    .svelte: "Svelte"
+    .astro: "Astro"
     .html: "HTML"
     .css: "CSS"
+    .scss: "SCSS"
+    .sass: "Sass"
+    .less: "Less"
+    
+    # Web Frameworks & APIs
+    .graphql: "GraphQL"
+    .gql: "GraphQL"
+    
+    # Data & Databases
     .sql: "SQL"
+    .mongodb: "MongoDB"
+    .nosql: "NoSQL"
+    
+    # Configuration & Markup
     .json: "JSON"
     .yaml: "YAML"
     .yml: "YAML"
     .xml: "XML"
+    .env: "Environment"
+    .env.local: "Environment"
+    .env.production: "Environment"
+    .env.development: "Environment"
+    .editorconfig: "Config"
+    .prettierrc: "Config"
+    .eslintrc: "Config"
+    .babelrc: "Config"
+    .gitignore: "Config"
+    .dockerignore: "Config"
+    .npmrc: "Config"
+    .nvmrc: "Config"
+    .nvmrc.json: "Config"
+    .toml: "TOML"
+    .ini: "INI"
+    .conf: "Config"
+    
+    # Documentation
     .md: "Markdown"
-    .db: "Database"
-    .log: "Logging"
+    .rst: "ReStructuredText"
+    .textile: "Textile"
+    .adoc: "AsciiDoc"
+    
+    # Shell Scripts
+    .sh: "Shell"
+    .bash: "Bash"
+    .zsh: "Zsh"
+    .ps1: "PowerShell"
+    .cmd: "Batch"
+    .bat: "Batch"
+    
+    # Build & DevOps
+    Dockerfile: "Docker"
+    Makefile: "Make"
+    CMakeLists.txt: "CMake"
+    pom.xml: "Maven"
+    build.gradle: "Gradle"
+    build.gradle.kts: "Gradle"
+    Gemfile: "Ruby"
+    Pipfile: "Python"
+    setup.py: "Python"
+    requirements.txt: "Python"
+    package.json: "JavaScript"
+    package-lock.json: "JavaScript"
+    yarn.lock: "JavaScript"
+    pnpm-lock.yaml: "JavaScript"
+    poetry.lock: "Python"
+    go.mod: "Go"
+    go.sum: "Go"
+    Cargo.toml: "Rust"
+    Cargo.lock: "Rust"
 
   # Strictly bounded drive search fallback (only used when needed)
   # Used by: ProjectDetector._lightweight_drive_search()
@@ -376,7 +437,7 @@ esm_popup:
 # Used by: 
 #   - DesktopAgent (agent.py - COLLECTION PHASE): Applies sticky project logic when flushing sessions
 #   - ETL pipeline (aggregate/ module - AGGREGATION PHASE): Buckets events and runs aggregators
-# Purpose: Configure context aggregation behavior (timezone, project stickiness, app display names)
+# Purpose: Configure context aggregation behavior (project stickiness, app display names)
 # NOTE: SHIFT-LEFT IMPLEMENTATION
 #   - Sticky project logic moved to COLLECTION PHASE (agent.py)
 #   - When a browser/terminal session has no explicit project, it inherits last-detected project
@@ -387,15 +448,10 @@ esm_popup:
 #      a. Check if sticky_project_name exists in memory
 #      b. Check if it's within TTL window (15 min)
 #      c. If yes: Assign detected project to this activity; if no: leave as NULL
-#   3. local_tz_offset_hours: Bucket events into daily sessions (midnight = session boundary)
+#   3. Timezone: Auto-detected from system (buckets events into daily sessions at local midnight)
 #   4. app_name_mapping: Normalize app display names (code.exe → "VS Code") for reports
-# Fallback: If config missing, defaults: tz_offset=0 (UTC), sticky_ttl=900s, no normalization
+# Fallback: If config missing, defaults:  sticky_ttl=900s, no normalization
 etl_pipeline:
-  # Local timezone offset used for daily bucketing (midnight splitting)
-  # Example: +5.5 for IST, -5 for EST.
-  # Impact: Determines session split boundaries in daily reports
-  local_tz_offset_hours: 0
-
   # Sticky project context TTL in seconds
   # Used by: DesktopAgent._apply_sticky_project() during collection
   # Purpose: Maintain project context across app switches (IDE → browser → IDE workflow)
@@ -420,13 +476,122 @@ etl_pipeline:
   # Without this: Reports show "code.exe", "pycharm64.exe" (ugly, browser-unmappable)
   # With this: Reports show "VS Code", "PyCharm" (readable, consistent)
   app_name_mapping:
+    # IDEs & Editors
     code.exe: "VS Code"
-    chrome.exe: "Google Chrome"
-    msedge.exe: "Microsoft Edge"
-    windowsterminal.exe: "Terminal"
     pycharm64.exe: "PyCharm"
     studio64.exe: "Android Studio"
+    sublime.exe: "Sublime Text"
+    idea.exe: "IntelliJ IDEA"
+    
+    # Browsers
+    chrome.exe: "Google Chrome"
+    msedge.exe: "Microsoft Edge"
+    firefox.exe: "Firefox"
+    brave.exe: "Brave"
+    
+    # Communication & Social
+    whatsapp.exe: "WhatsApp"
+    telegram.exe: "Telegram"
+    slack.exe: "Slack"
+    teams.exe: "Microsoft Teams"
+    discord.exe: "Discord"
+    
+    # Media & Entertainment
+    spotify.exe: "Spotify"
+    netflix.exe: "Netflix"
+    vlc.exe: "VLC Media Player"
+    
+    # Development Tools
+    windowsterminal.exe: "Terminal"
     postman.exe: "Postman"
+    git.exe: "Git"
+    docker.exe: "Docker"
+    
+    # Office & Productivity
+    winword.exe: "Microsoft Word"
+    excel.exe: "Microsoft Excel"
+    powerpnt.exe: "Microsoft PowerPoint"
+  
+  # Browser detection and service name mapping
+  # Used by: ETLPipeline._extract_browser_app_name() during aggregation
+  # Purpose: For browser activity, extract service name from URL/tab title for granular tracking
+  # Flow:
+  #   1. When aggregating app activity, check if app is a known browser
+  #   2. If browser: parse active_file (URL/tab name) and search for keywords
+  #   3. If keyword found: use service name instead of generic "Chrome" or "Firefox"
+  #   4. If no keyword: fallback to browser name (current behavior maintained)
+  # Example:
+  #   Raw: app="Chrome", active_file="https://chat.openai.com/..."
+  #   Detected: "chatgpt" keyword → Aggregated as "ChatGPT" (not "Chrome")
+  #   Result: Reports show ChatGPT usage, not generic Chrome time
+  # Pros:
+  #   - Tracks which services/platforms users spend time on (not just browser name)
+  #   - Identifies productivity (AWS, Swagger) vs distraction (YouTube, Twitter)
+  #   - Helps quantify work types (research, cloud work, documentation)
+  # Maintenance:
+  #   - Add browsers as they emerge (lowercase, match window.title)
+  #   - Add keywords as you discover new services (longer/specific first)
+  #   - Keywords are case-insensitive matching on URL/tab name
+  browser_detection:
+    # List of browser executable/process names (lowercase)
+    # Example: chrome.exe → "chrome", firefox.exe → "firefox"
+    browsers:
+      - chrome
+      - firefox
+      - brave
+      - safari
+      - edge
+      - opera
+      - browser
+    
+    # Keywords mapping: Search string (in URL/tab) → Display name for reports
+    # Matching logic: If active_file contains ANY of these keywords (case-insensitive), 
+    #                 use the display_name instead of browser name
+    # Order matters: More specific keywords should come first (longer matches)
+    # Add new services: Just add new keyword → display_name pairs below
+    service_keywords:
+      # AI/LLM Services
+      chatgpt: "ChatGPT"
+      chat.openai: "ChatGPT"
+      openai: "OpenAI"
+      gemini: "Gemini"
+      claude: "Claude"
+      copilot: "Copilot"
+      
+      # Development Tools & Platforms
+      swagger: "Swagger"
+      github: "GitHub"
+      gitlab: "GitLab"
+      bitbucket: "Bitbucket"
+      stack overflow: "Stack Overflow"
+      stackoverflow: "Stack Overflow"
+      postman: "Postman"
+      insomnia: "Insomnia"
+      
+      # Cloud & DevOps Platforms
+      amazonaws: "AWS"
+      aws: "AWS"
+      azure: "Azure"
+      google cloud: "Google Cloud"
+      heroku: "Heroku"
+      digitalocean: "DigitalOcean"
+      
+      # Media & Content Platforms
+      youtube: "YouTube"
+      wikipedia: "Wikipedia"
+      medium: "Medium"
+      
+      # Productivity & Communication
+      google: "Google"
+      maps: "Maps"
+      slack: "Slack"
+      notion: "Notion"
+      figma: "Figma"
+      dribbble: "Dribbble"
+      linkedin: "LinkedIn"
+      twitter: "Twitter"
+      x.com: "X"
+      reddit: "Reddit"
   
   # Language to skill mapping (detected_language → skill category)
   # Used by: Aggregate pipeline (skill category reporting and analysis)
@@ -439,21 +604,74 @@ etl_pipeline:
   # Impact: Skills become the reporting unit for dashboards (backend %, frontend %, etc.)
   # Fallback: If config missing, no skill mapping (language-based reporting only)
   language_to_skill_mapping:
+    # Backend Languages
     Python: "Backend"
-    JavaScript: "Frontend"
-    TypeScript: "Frontend"
     Java: "Backend"
-    "C++": "Systems"
-    "C#": "Backend"
+    C#: "Backend"
     Go: "Backend"
-    Rust: "Systems"
     Ruby: "Backend"
     PHP: "Backend"
-    Swift: "Mobile"
-    Kotlin: "Mobile"
-    SQL: "Data"
+    Perl: "Backend"
+    Scala: "Backend"
+    Groovy: "Backend"
+    Lua: "Backend"
+    
+    # Systems Programming
+    "C++": "Systems"
+    C: "Systems"
+    Rust: "Systems"
+    
+    # Frontend Languages & Frameworks
+    JavaScript: "Frontend"
+    TypeScript: "Frontend"
+    React: "Frontend"
+    Vue: "Frontend"
+    Svelte: "Frontend"
+    Astro: "Frontend"
     HTML: "Frontend"
     CSS: "Frontend"
+    SCSS: "Frontend"
+    Sass: "Frontend"
+    Less: "Frontend"
+    
+    # Mobile Development
+    Swift: "Mobile"
+    Kotlin: "Mobile"
+    
+    # Data & APIs
+    SQL: "Data"
+    MongoDB: "Data"
+    NoSQL: "Data"
+    GraphQL: "Data"
+    
+    # DevOps & Infrastructure
+    Docker: "DevOps"
+    Make: "DevOps"
+    CMake: "DevOps"
+    Maven: "DevOps"
+    Gradle: "DevOps"
+    Shell: "DevOps"
+    Bash: "DevOps"
+    Zsh: "DevOps"
+    PowerShell: "DevOps"
+    Batch: "DevOps"
+    
+    # Configuration & Build
+    JSON: "Configuration"
+    YAML: "Configuration"
+    XML: "Configuration"
+    TOML: "Configuration"
+    INI: "Configuration"
+    Config: "Configuration"
+    Environment: "Configuration"
+    
+    # Documentation
+    Markdown: "Documentation"
+    ReStructuredText: "Documentation"
+    Textile: "Documentation"
+    AsciiDoc: "Documentation"
+    
+    # Fallback
     Unknown: "Other"
 
 # Lines of Code (LOC) Scanner Settings
