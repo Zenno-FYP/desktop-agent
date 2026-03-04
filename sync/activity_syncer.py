@@ -230,28 +230,34 @@ class ActivitySyncer:
             return False
 
     def _mark_all_synced(self, projects: list[dict]):
-        """Mark all synced projects and dates as needs_sync = 0.
+        """Mark all synced projects, dates, and skills as needs_sync = 0.
         
         Args:
-            projects: List of project dicts (same as sync payload data)
+            projects: List of project dicts from sync payload
         """
         try:
             for project in projects:
                 project_name = project.get("project_name")
                 days = project.get("days", [])
                 
-                # Mark all dates for this project
+                # Mark all daily aggregates for this project as synced
                 for day in days:
                     date = day.get("date")
                     self.db.mark_project_synced(project_name, date)
                 
-                # Also mark LOC snapshots as synced
-                self.db.conn.execute(
-                    "UPDATE project_loc_snapshots SET needs_sync = 0 WHERE project_name = ?",
-                    (project_name,),
-                )
+                # Mark project-level data as synced
+                with self.db.conn:
+                    # Mark LOC snapshots
+                    self.db.conn.execute(
+                        "UPDATE project_loc_snapshots SET needs_sync = 0 WHERE project_name = ?",
+                        (project_name,),
+                    )
+                    # Mark cumulative skills
+                    self.db.conn.execute(
+                        "UPDATE project_skills SET needs_sync = 0 WHERE project_name = ?",
+                        (project_name,),
+                    )
             
-            self.db.conn.commit()
             logger.info(f"[ActivitySyncer] Marked {len(projects)} projects as synced")
             
         except Exception as e:

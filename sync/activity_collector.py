@@ -82,7 +82,7 @@ class ActivityCollector:
             return []
 
     def _build_project_dict(self, project_name: str) -> Optional[dict]:
-        """Build complete project dict with metadata, LOC, and daily data.
+        """Build complete project dict with metadata, LOC, skills, and daily data.
         
         Args:
             project_name: Name of project to collect data for
@@ -90,14 +90,17 @@ class ActivityCollector:
         Returns:
             Project dict or None if project has no data
         """
-        # Get project metadata (first_seen_at, last_active_at)
+        # Get project metadata
         metadata = self._get_project_metadata(project_name)
         if not metadata:
             logger.warning(f"Project '{project_name}' has no metadata; skipping")
             return None
         
-        # Get current LOC snapshots for this project
+        # Get current LOC snapshots
         current_loc = self._get_project_loc(project_name)
+        
+        # Get cumulative project skills
+        project_skills = self._get_project_skills(project_name)
         
         # Collect daily aggregates
         days = self._collect_daily_buckets(project_name)
@@ -106,17 +109,11 @@ class ActivityCollector:
             logger.debug(f"Project '{project_name}' has no pending daily data")
             return None
         
-        # Build metadata object - always send both timestamps, backend handles differentiation
-        metadata_obj = {}
-        if metadata.get("first_seen_at"):
-            metadata_obj["first_seen_at"] = metadata["first_seen_at"]
-        if metadata.get("last_active_at"):
-            metadata_obj["last_active_at"] = metadata["last_active_at"]
-        
         return {
             "project_name": project_name,
-            "metadata": metadata_obj,
+            "metadata": metadata,
             "current_loc": current_loc,
+            "project_skills": project_skills,
             "days": days,
         }
 
@@ -239,20 +236,16 @@ class ActivityCollector:
         """
         languages = self._get_daily_languages(project_name, date)
         apps = self._get_daily_apps(project_name, date)
-        skills = self._get_daily_skills(project_name, date)
         context = self._get_daily_context(project_name, date)
         behavior = self._get_daily_behavior(project_name, date)
         
-        # Skip if all metrics are empty
-        if not any([languages, apps, skills, context, behavior]):
-            logger.debug(f"No metrics for {project_name} on {date}")
+        if not any([languages, apps, context, behavior]):
             return None
         
         return {
             "date": date,
             "languages": languages,
             "apps": apps,
-            "skills": skills,
             "context": context,
             "behavior": behavior,
         }
@@ -317,35 +310,38 @@ class ActivityCollector:
             logger.error(f"Error querying apps for {project_name}/{date}: {e}")
             return {}
 
-    def _get_daily_skills(self, project_name: str, date: str) -> dict:
-        """Get skill metrics for a specific day.
+    def _get_project_skills(self, project_name: str) -> list[dict]:
+        """Get cumulative skill metrics for a project.
         
         Args:
             project_name: Project identifier
-            date: YYYY-MM-DD date string
             
         Returns:
-            Dict mapping skill name to duration_sec
+            List of {"skill_name": "...", "duration_sec": ...}
         """
         try:
             cursor = self.db.conn.execute(
                 """
                 SELECT skill_name, duration_sec
-                FROM daily_project_skills
-                WHERE project_name = ? AND date = ? AND needs_sync = 1
+                FROM project_skills
+                WHERE project_name = ? AND needs_sync = 1
+                ORDER BY skill_name
                 """,
-                (project_name, date),
+                (project_name,),
             )
             
-            result = {}
+            result = []
             for row in cursor.fetchall():
                 if row[1] > 0:
-                    result[row[0]] = row[1]
+                    result.append({
+                        "skill_name": row[0],
+                        "duration_sec": row[1],
+                    })
             
             return result
         except Exception as e:
-            logger.error(f"Error querying skills for {project_name}/{date}: {e}")
-            return {}
+            logger.error(f"Error querying skills for {project_name}: {e}")
+            return []
 
     def _get_daily_context(self, project_name: str, date: str) -> dict:
         """Get context/state metrics for a specific day.

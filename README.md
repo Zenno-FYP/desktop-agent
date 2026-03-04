@@ -117,7 +117,8 @@ logging:
 
 - `raw_activity_logs`: session-level logs (source of truth)
 - `projects`: known projects + activity timestamps
-- `daily_project_apps`, `daily_project_languages`, `daily_project_skills`
+- `daily_project_apps`, `daily_project_languages`
+- `project_skills`: cumulative per-project skills (like LOC snapshots)
 - `daily_project_context`, `daily_project_behavior`
 - `project_loc_snapshots`: per-project per-language LOC + file counts
 

@@ -211,11 +211,8 @@ project_detector:
   # Impact: Stored in raw_activity_logs.language for skill tracking, aggregation
   # Fallback: If extension not found, returns None (no default language)
   language_extensions:
+    # Backend Languages
     .py: "Python"
-    .js: "JavaScript"
-    .ts: "TypeScript"
-    .jsx: "React"
-    .tsx: "React"
     .java: "Java"
     .cpp: "C++"
     .c: "C"
@@ -224,18 +221,90 @@ project_detector:
     .rs: "Rust"
     .rb: "Ruby"
     .php: "PHP"
-    .swift: "Swift"
-    .kt: "Kotlin"
+    .pl: "Perl"
+    .scala: "Scala"
+    .groovy: "Groovy"
+    .lua: "Lua"
+    
+    # Frontend Languages
+    .js: "JavaScript"
+    .ts: "TypeScript"
+    .jsx: "React"
+    .tsx: "React"
+    .vue: "Vue"
+    .svelte: "Svelte"
+    .astro: "Astro"
     .html: "HTML"
     .css: "CSS"
+    .scss: "SCSS"
+    .sass: "Sass"
+    .less: "Less"
+    
+    # Web Frameworks & APIs
+    .graphql: "GraphQL"
+    .gql: "GraphQL"
+    
+    # Data & Databases
     .sql: "SQL"
+    .mongodb: "MongoDB"
+    .nosql: "NoSQL"
+    
+    # Configuration & Markup
     .json: "JSON"
     .yaml: "YAML"
     .yml: "YAML"
     .xml: "XML"
+    .env: "Environment"
+    .env.local: "Environment"
+    .env.production: "Environment"
+    .env.development: "Environment"
+    .editorconfig: "Config"
+    .prettierrc: "Config"
+    .eslintrc: "Config"
+    .babelrc: "Config"
+    .gitignore: "Config"
+    .dockerignore: "Config"
+    .npmrc: "Config"
+    .nvmrc: "Config"
+    .nvmrc.json: "Config"
+    .toml: "TOML"
+    .ini: "INI"
+    .conf: "Config"
+    
+    # Documentation
     .md: "Markdown"
-    .db: "Database"
-    .log: "Logging"
+    .rst: "ReStructuredText"
+    .textile: "Textile"
+    .adoc: "AsciiDoc"
+    
+    # Shell Scripts
+    .sh: "Shell"
+    .bash: "Bash"
+    .zsh: "Zsh"
+    .ps1: "PowerShell"
+    .cmd: "Batch"
+    .bat: "Batch"
+    
+    # Build & DevOps
+    Dockerfile: "Docker"
+    Makefile: "Make"
+    CMakeLists.txt: "CMake"
+    pom.xml: "Maven"
+    build.gradle: "Gradle"
+    build.gradle.kts: "Gradle"
+    Gemfile: "Ruby"
+    Pipfile: "Python"
+    setup.py: "Python"
+    requirements.txt: "Python"
+    package.json: "JavaScript"
+    package-lock.json: "JavaScript"
+    yarn.lock: "JavaScript"
+    pnpm-lock.yaml: "JavaScript"
+    poetry.lock: "Python"
+    go.mod: "Go"
+    go.sum: "Go"
+    Cargo.toml: "Rust"
+    Cargo.lock: "Rust"
 
   # Strictly bounded drive search fallback (only used when needed)
   # Used by: ProjectDetector._lightweight_drive_search()
@@ -454,21 +523,74 @@ etl_pipeline:
   # Impact: Skills become the reporting unit for dashboards (backend %, frontend %, etc.)
   # Fallback: If config missing, no skill mapping (language-based reporting only)
   language_to_skill_mapping:
+    # Backend Languages
     Python: "Backend"
-    JavaScript: "Frontend"
-    TypeScript: "Frontend"
     Java: "Backend"
-    "C++": "Systems"
-    "C#": "Backend"
+    C#: "Backend"
     Go: "Backend"
-    Rust: "Systems"
     Ruby: "Backend"
     PHP: "Backend"
-    Swift: "Mobile"
-    Kotlin: "Mobile"
-    SQL: "Data"
+    Perl: "Backend"
+    Scala: "Backend"
+    Groovy: "Backend"
+    Lua: "Backend"
+    
+    # Systems Programming
+    "C++": "Systems"
+    C: "Systems"
+    Rust: "Systems"
+    
+    # Frontend Languages & Frameworks
+    JavaScript: "Frontend"
+    TypeScript: "Frontend"
+    React: "Frontend"
+    Vue: "Frontend"
+    Svelte: "Frontend"
+    Astro: "Frontend"
     HTML: "Frontend"
     CSS: "Frontend"
+    SCSS: "Frontend"
+    Sass: "Frontend"
+    Less: "Frontend"
+    
+    # Mobile Development
+    Swift: "Mobile"
+    Kotlin: "Mobile"
+    
+    # Data & APIs
+    SQL: "Data"
+    MongoDB: "Data"
+    NoSQL: "Data"
+    GraphQL: "Data"
+    
+    # DevOps & Infrastructure
+    Docker: "DevOps"
+    Make: "DevOps"
+    CMake: "DevOps"
+    Maven: "DevOps"
+    Gradle: "DevOps"
+    Shell: "DevOps"
+    Bash: "DevOps"
+    Zsh: "DevOps"
+    PowerShell: "DevOps"
+    Batch: "DevOps"
+    
+    # Configuration & Build
+    JSON: "Configuration"
+    YAML: "Configuration"
+    XML: "Configuration"
+    TOML: "Configuration"
+    INI: "Configuration"
+    Config: "Configuration"
+    Environment: "Configuration"
+    
+    # Documentation
+    Markdown: "Documentation"
+    ReStructuredText: "Documentation"
+    Textile: "Documentation"
+    AsciiDoc: "Documentation"
+    
+    # Fallback
     Unknown: "Other"
 
 # Lines of Code (LOC) Scanner Settings

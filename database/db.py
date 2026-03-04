@@ -195,17 +195,17 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_dpa_needs_sync ON daily_project_apps(needs_sync)",
 
             """
-            CREATE TABLE IF NOT EXISTS daily_project_skills (
-                date TEXT NOT NULL,
+            CREATE TABLE IF NOT EXISTS project_skills (
                 project_name TEXT NOT NULL,
                 skill_name TEXT NOT NULL,
                 duration_sec INTEGER NOT NULL DEFAULT 0,
+                last_updated_at TEXT NOT NULL,
                 needs_sync INTEGER NOT NULL DEFAULT 1,
-                PRIMARY KEY (date, project_name, skill_name),
+                PRIMARY KEY (project_name, skill_name),
                 FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
             )
             """,
-            "CREATE INDEX IF NOT EXISTS idx_dps_needs_sync ON daily_project_skills(needs_sync)",
+            "CREATE INDEX IF NOT EXISTS idx_ps_needs_sync ON project_skills(needs_sync)",
 
             """
             CREATE TABLE IF NOT EXISTS daily_project_context (
@@ -850,87 +850,76 @@ class Database:
 
     # ==================== DAILY PROJECT SKILLS ====================
 
-    def get_daily_skills_by_date(self, date, needs_sync=None):
-        """Get all skills for a given date, optionally filtered by sync status.
+    def get_project_skills(self, project_name=None):
+        """Get all skills for a project or all projects, optionally filtered by sync status.
         
         Args:
-            date: YYYY-MM-DD (local date)
-            needs_sync: If True/False, filter by sync status. If None, return all.
+            project_name: If provided, get skills for this project only. If None, get all.
             
         Returns:
-            List of dicts with keys: date, project_name, skill_name, duration_sec, needs_sync
+            List of dicts with keys: project_name, skill_name, duration_sec, last_updated_at, needs_sync
         """
-        if needs_sync is None:
+        if project_name is None:
             cursor = self.conn.execute('''
-                SELECT date, project_name, skill_name, duration_sec, needs_sync
-                FROM daily_project_skills
-                WHERE date = ?
+                SELECT project_name, skill_name, duration_sec, last_updated_at, needs_sync
+                FROM project_skills
                 ORDER BY project_name, skill_name
-            ''', (date,))
+            ''')
         else:
             cursor = self.conn.execute('''
-                SELECT date, project_name, skill_name, duration_sec, needs_sync
-                FROM daily_project_skills
-                WHERE date = ? AND needs_sync = ?
-                ORDER BY project_name, skill_name
-            ''', (date, 1 if needs_sync else 0))
+                SELECT project_name, skill_name, duration_sec, last_updated_at, needs_sync
+                FROM project_skills
+                WHERE project_name = ?
+                ORDER BY skill_name
+            ''', (project_name,))
         
         result = []
         for row in cursor.fetchall():
             result.append({
-                'date': row[0],
-                'project_name': row[1],
-                'skill_name': row[2],
-                'duration_sec': row[3],
+                'project_name': row[0],
+                'skill_name': row[1],
+                'duration_sec': row[2],
+                'last_updated_at': row[3],
                 'needs_sync': row[4],
             })
         return result
 
-    def get_daily_skills_pending_sync(self):
-        """Get all skill rows pending cloud sync (needs_sync = 1).
+    def get_project_skills_pending_sync(self):
+        """Get all project skills pending cloud sync (needs_sync = 1).
         
         Returns:
-            List of dicts with keys: date, project_name, skill_name, duration_sec, needs_sync
+            List of dicts with keys: project_name, skill_name, duration_sec, last_updated_at, needs_sync
         """
         cursor = self.conn.execute('''
-            SELECT date, project_name, skill_name, duration_sec, needs_sync
-            FROM daily_project_skills
+            SELECT project_name, skill_name, duration_sec, last_updated_at, needs_sync
+            FROM project_skills
             WHERE needs_sync = 1
-            ORDER BY date DESC, project_name, skill_name
+            ORDER BY project_name, skill_name
         ''')
         
         result = []
         for row in cursor.fetchall():
             result.append({
-                'date': row[0],
-                'project_name': row[1],
-                'skill_name': row[2],
-                'duration_sec': row[3],
+                'project_name': row[0],
+                'skill_name': row[1],
+                'duration_sec': row[2],
+                'last_updated_at': row[3],
                 'needs_sync': row[4],
             })
         return result
 
-    def mark_daily_skills_synced(self, date, project_name=None):
-        """Mark skill rows as synced (needs_sync = 0).
+    def mark_project_skills_synced(self, project_name):
+        """Mark all skills for a project as synced (needs_sync = 0).
         
         Args:
-            date: YYYY-MM-DD (local date) to mark synced
-            project_name: Optional project filter. If None, marks all rows for that date.
+            project_name: Project to mark all skills as synced
         """
-        if project_name is None:
-            with self.conn:
-                self.conn.execute('''
-                    UPDATE daily_project_skills
-                    SET needs_sync = 0
-                    WHERE date = ?
-                ''', (date,))
-        else:
-            with self.conn:
-                self.conn.execute('''
-                    UPDATE daily_project_skills
-                    SET needs_sync = 0
-                    WHERE date = ? AND project_name = ?
-                ''', (date, project_name))
+        with self.conn:
+            self.conn.execute('''
+                UPDATE project_skills
+                SET needs_sync = 0
+                WHERE project_name = ?
+            ''', (project_name,))
 
     # ==================== DAILY PROJECT CONTEXT ====================
 
@@ -1308,7 +1297,7 @@ class Database:
                 UNION ALL
                 SELECT 1 FROM daily_project_apps WHERE needs_sync = 1
                 UNION ALL
-                SELECT 1 FROM daily_project_skills WHERE needs_sync = 1
+                SELECT 1 FROM project_skills WHERE needs_sync = 1
                 UNION ALL
                 SELECT 1 FROM daily_project_context WHERE needs_sync = 1
                 UNION ALL
@@ -1356,7 +1345,7 @@ class Database:
                         WHERE project_name = ?
                     ''', (project_name,))
                     self.conn.execute('''
-                        UPDATE daily_project_skills
+                        UPDATE project_skills
                         SET needs_sync = 0
                         WHERE project_name = ?
                     ''', (project_name,))
@@ -1387,11 +1376,7 @@ class Database:
                         SET needs_sync = 0
                         WHERE project_name = ? AND date = ?
                     ''', (project_name, date))
-                    self.conn.execute('''
-                        UPDATE daily_project_skills
-                        SET needs_sync = 0
-                        WHERE project_name = ? AND date = ?
-                    ''', (project_name, date))
+                    # Note: project_skills is not date-based, so skip date-based sync for it
                     self.conn.execute('''
                         UPDATE daily_project_context
                         SET needs_sync = 0
