@@ -512,6 +512,87 @@ etl_pipeline:
     excel.exe: "Microsoft Excel"
     powerpnt.exe: "Microsoft PowerPoint"
   
+  # Browser detection and service name mapping
+  # Used by: ETLPipeline._extract_browser_app_name() during aggregation
+  # Purpose: For browser activity, extract service name from URL/tab title for granular tracking
+  # Flow:
+  #   1. When aggregating app activity, check if app is a known browser
+  #   2. If browser: parse active_file (URL/tab name) and search for keywords
+  #   3. If keyword found: use service name instead of generic "Chrome" or "Firefox"
+  #   4. If no keyword: fallback to browser name (current behavior maintained)
+  # Example:
+  #   Raw: app="Chrome", active_file="https://chat.openai.com/..."
+  #   Detected: "chatgpt" keyword → Aggregated as "ChatGPT" (not "Chrome")
+  #   Result: Reports show ChatGPT usage, not generic Chrome time
+  # Pros:
+  #   - Tracks which services/platforms users spend time on (not just browser name)
+  #   - Identifies productivity (AWS, Swagger) vs distraction (YouTube, Twitter)
+  #   - Helps quantify work types (research, cloud work, documentation)
+  # Maintenance:
+  #   - Add browsers as they emerge (lowercase, match window.title)
+  #   - Add keywords as you discover new services (longer/specific first)
+  #   - Keywords are case-insensitive matching on URL/tab name
+  browser_detection:
+    # List of browser executable/process names (lowercase)
+    # Example: chrome.exe → "chrome", firefox.exe → "firefox"
+    browsers:
+      - chrome
+      - firefox
+      - brave
+      - safari
+      - edge
+      - opera
+      - browser
+    
+    # Keywords mapping: Search string (in URL/tab) → Display name for reports
+    # Matching logic: If active_file contains ANY of these keywords (case-insensitive), 
+    #                 use the display_name instead of browser name
+    # Order matters: More specific keywords should come first (longer matches)
+    # Add new services: Just add new keyword → display_name pairs below
+    service_keywords:
+      # AI/LLM Services
+      chatgpt: "ChatGPT"
+      chat.openai: "ChatGPT"
+      openai: "OpenAI"
+      gemini: "Gemini"
+      claude: "Claude"
+      copilot: "Copilot"
+      
+      # Development Tools & Platforms
+      swagger: "Swagger"
+      github: "GitHub"
+      gitlab: "GitLab"
+      bitbucket: "Bitbucket"
+      stack overflow: "Stack Overflow"
+      stackoverflow: "Stack Overflow"
+      postman: "Postman"
+      insomnia: "Insomnia"
+      
+      # Cloud & DevOps Platforms
+      amazonaws: "AWS"
+      aws: "AWS"
+      azure: "Azure"
+      google cloud: "Google Cloud"
+      heroku: "Heroku"
+      digitalocean: "DigitalOcean"
+      
+      # Media & Content Platforms
+      youtube: "YouTube"
+      wikipedia: "Wikipedia"
+      medium: "Medium"
+      
+      # Productivity & Communication
+      google: "Google"
+      maps: "Maps"
+      slack: "Slack"
+      notion: "Notion"
+      figma: "Figma"
+      dribbble: "Dribbble"
+      linkedin: "LinkedIn"
+      twitter: "Twitter"
+      x.com: "X"
+      reddit: "Reddit"
+  
   # Language to skill mapping (detected_language → skill category)
   # Used by: Aggregate pipeline (skill category reporting and analysis)
   # Purpose: Group programming languages into broader skill domains for portfolio/reporting

@@ -36,10 +36,17 @@ class ETLPipeline:
             etl_cfg = config.get('etl_pipeline', {})
             self.app_name_mapping = etl_cfg.get('app_name_mapping', {})
             self.language_to_skill_mapping = etl_cfg.get('language_to_skill_mapping', {})
+            
+            # Browser detection config
+            browser_cfg = etl_cfg.get('browser_detection', {})
+            self.browsers = set(browser_cfg.get('browsers', []))
+            self.service_keywords = browser_cfg.get('service_keywords', {})
         else:
             # Fallback defaults if no config provided
             self.app_name_mapping = {}
             self.language_to_skill_mapping = {}
+            self.browsers = set()
+            self.service_keywords = {}
         
         # Initialize aggregators
         from aggregate.project_aggregator import ProjectAggregator
@@ -95,13 +102,13 @@ class ETLPipeline:
         Returns:
             List of tuples: (log_id, start_time, end_time, app_name, project_name, project_path,
                            detected_language, context_state, manually_verified_label, duration_sec, typing_intensity,
-                           mouse_click_rate, mouse_scroll_events, idle_duration_sec)
+                           mouse_click_rate, mouse_scroll_events, idle_duration_sec, active_file)
         """
         cursor = self.db.conn.execute(
             """
             SELECT log_id, start_time, end_time, app_name, project_name, project_path,
                    detected_language, context_state, manually_verified_label, duration_sec, typing_intensity,
-                   mouse_click_rate, mouse_scroll_events, idle_duration_sec
+                   mouse_click_rate, mouse_scroll_events, idle_duration_sec, active_file
             FROM raw_activity_logs
             WHERE is_aggregated = 0
               AND context_state IS NOT NULL
@@ -116,6 +123,7 @@ class ETLPipeline:
         SIMPLIFIED (Shift-Left Sticky Project):
         1. Trust database project_name (already filled by upstream collector logic)
         2. Midnight splitting (split overnight boundaries in local time)
+        3. Browser keyword extraction (for Chrome, Firefox, etc., extract active service from URL)
         
         NOTE: Sticky project logic has been moved to collection phase (agent.py).
         If project_name is in raw_activity_logs, it is mathematically correct.
@@ -149,6 +157,7 @@ class ETLPipeline:
             mouse_click_rate,
             mouse_scroll_events,
             idle_duration_sec,
+            active_file,
         ) in raw_logs:
             # Parse timestamps (already in local time)
             start_local = datetime.fromisoformat(start_time_iso)
@@ -177,6 +186,9 @@ class ETLPipeline:
                 # Fallback: remove everything after the first dot and title-case
                 cleaned = app_name.split('.')[0]
                 clean_app_name = cleaned.title()
+            
+            # Browser keyword extraction: if it's a browser, try to extract service from URL
+            clean_app_name = self._extract_browser_app_name(clean_app_name, active_file)
 
             # ==================== MIDNIGHT SPLITTING ====================
             segments = self._split_across_midnight_local(start_local, end_local)
@@ -202,6 +214,43 @@ class ETLPipeline:
                 })
 
         return transformed
+
+    def _extract_browser_app_name(self, app_name: str, active_file: str) -> str:
+        """Extract service name from browser URL/tab if app is a browser.
+        
+        For browsers configured in browser_detection.browsers, checks active_file (URL/tab name)
+        for keywords matching known services. If found, returns service name as app_name.
+        Otherwise returns original app_name (e.g., "Browser", "Chrome").
+        
+        Keywords and browsers are loaded from config (etl_pipeline.browser_detection).
+        This allows easy addition of new browsers and services without code changes.
+        
+        Args:
+            app_name: Cleaned app name (e.g., "Chrome", "Browser")
+            active_file: URL/tab name from browser (can be None)
+            
+        Returns:
+            Service name if keyword found, otherwise original app_name
+        """
+        # Check if this is a known browser (case-insensitive)
+        app_lower = app_name.lower()
+        if app_lower not in self.browsers:
+            return app_name
+        
+        # If no active_file, can't extract service name
+        if not active_file:
+            return app_name
+        
+        active_lower = active_file.lower()
+        
+        # Search for keywords in active_file (case-insensitive)
+        # service_keywords dict has: keyword → display_name
+        for keyword, display_name in self.service_keywords.items():
+            if keyword in active_lower:
+                return display_name
+        
+        # No keyword found, return original app_name (browser name)
+        return app_name
 
     def _split_across_midnight_local(self, start_local, end_local):
         """Split a time interval across local midnight boundaries.
