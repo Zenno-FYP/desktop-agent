@@ -140,7 +140,7 @@ class Database:
 
                 typing_intensity REAL DEFAULT 0.0,
                 mouse_click_rate REAL DEFAULT 0.0,
-                mouse_scroll_events INTEGER DEFAULT 0,
+                deletion_key_presses INTEGER DEFAULT 0,
                 idle_duration_sec INTEGER DEFAULT 0,
 
                 context_state TEXT,
@@ -224,9 +224,9 @@ class Database:
             CREATE TABLE IF NOT EXISTS daily_project_behavior (
                 date TEXT NOT NULL,
                 project_name TEXT NOT NULL,
-                total_keystrokes INTEGER NOT NULL DEFAULT 0,
-                total_mouse_clicks INTEGER NOT NULL DEFAULT 0,
-                total_scroll_events INTEGER NOT NULL DEFAULT 0,
+                typing_intensity_kpm REAL NOT NULL DEFAULT 0.0,
+                mouse_click_rate_cpm REAL NOT NULL DEFAULT 0.0,
+                total_deletion_key_presses INTEGER NOT NULL DEFAULT 0,
                 total_idle_sec INTEGER NOT NULL DEFAULT 0,
                 needs_sync INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY (date, project_name),
@@ -297,7 +297,7 @@ class Database:
             'detected_language': activity_data.get('detected_language'),
             'typing_intensity': activity_data.get('typing_intensity', 0.0),
             'mouse_click_rate': activity_data.get('mouse_click_rate', 0.0),
-            'mouse_scroll_events': activity_data.get('mouse_scroll_events', 0),
+            'deletion_key_presses': activity_data.get('deletion_key_presses', 0),
             'idle_duration_sec': activity_data.get('idle_duration_sec', 0),
             'context_state': activity_data.get('context_state'),
             'confidence_score': activity_data.get('confidence_score'),
@@ -309,7 +309,7 @@ class Database:
                 INSERT INTO raw_activity_logs (
                     start_time, end_time, app_name, window_title, duration_sec,
                     project_name, project_path, active_file, detected_language,
-                    typing_intensity, mouse_click_rate, mouse_scroll_events, idle_duration_sec,
+                    typing_intensity, mouse_click_rate, deletion_key_presses, idle_duration_sec,
                     context_state, confidence_score
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

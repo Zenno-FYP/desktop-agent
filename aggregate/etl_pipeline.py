@@ -102,13 +102,13 @@ class ETLPipeline:
         Returns:
             List of tuples: (log_id, start_time, end_time, app_name, project_name, project_path,
                            detected_language, context_state, manually_verified_label, duration_sec, typing_intensity,
-                           mouse_click_rate, mouse_scroll_events, idle_duration_sec, active_file)
+                           mouse_click_rate, deletion_key_presses, idle_duration_sec, active_file)
         """
         cursor = self.db.conn.execute(
             """
             SELECT log_id, start_time, end_time, app_name, project_name, project_path,
                    detected_language, context_state, manually_verified_label, duration_sec, typing_intensity,
-                   mouse_click_rate, mouse_scroll_events, idle_duration_sec, active_file
+                   mouse_click_rate, deletion_key_presses, idle_duration_sec, active_file
             FROM raw_activity_logs
             WHERE is_aggregated = 0
               AND context_state IS NOT NULL
@@ -155,7 +155,7 @@ class ETLPipeline:
             duration_sec,
             typing_intensity,
             mouse_click_rate,
-            mouse_scroll_events,
+            deletion_key_presses,
             idle_duration_sec,
             active_file,
         ) in raw_logs:
@@ -209,7 +209,7 @@ class ETLPipeline:
                     "end_time_local": seg_end.strftime("%Y-%m-%d %H:%M:%S"),
                     "typing_intensity": typing_intensity,
                     "mouse_click_rate": mouse_click_rate,
-                    "mouse_scroll_events": mouse_scroll_events,
+                    "deletion_key_presses": deletion_key_presses,
                     "idle_duration_sec": idle_duration_sec,
                 })
 

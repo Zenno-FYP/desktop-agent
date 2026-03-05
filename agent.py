@@ -102,7 +102,7 @@ class ActivitySession:
             'detected_language': detected_language,
             'typing_intensity': metrics['typing_intensity'],
             'mouse_click_rate': metrics['mouse_click_rate'],
-            'mouse_scroll_events': metrics['mouse_scroll_events'],
+            'deletion_key_presses': metrics['deletion_key_presses'],
             'idle_duration_sec': idle_metrics['idle_duration_sec'],
             # Context state (Phase 2 will populate this with heuristics/ML)
             'context_state': None,

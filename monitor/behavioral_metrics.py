@@ -1,4 +1,4 @@
-"""Track behavioral signals: typing intensity, clicks, scrolls."""
+"""Track behavioral signals: typing intensity, clicks, deletion key presses."""
 import logging
 import time
 from typing import Dict, Any
@@ -21,13 +21,16 @@ class BehavioralMetrics:
         self.key_count = 0
         self.modifier_keys = {'shift', 'ctrl', 'alt', 'cmd'}
         
+        # Track active modifiers for combination detection (Ctrl+Z, Cmd+Z)
+        self.active_modifiers = set()
+        
         # Mouse metrics
         self.click_count = 0
         self.last_click_time = 0
         self.click_debounce_ms = click_debounce_ms  # From config
         
-        # Scroll metrics
-        self.scroll_count = 0
+        # Deletion key metrics (Delete, Backspace, Ctrl+Z/Cmd+Z)
+        self.deletion_key_count = 0
         
         # Time tracking
         self.start_time = time.time()
@@ -42,14 +45,13 @@ class BehavioralMetrics:
     def start_listening(self):
         """Start keyboard and mouse listeners."""
         try:
-            # Keyboard listener
-            self.keyboard_listener = keyboard.Listener(on_press=self._on_key_press)
+            # Keyboard listener with on_release to track modifier state
+            self.keyboard_listener = keyboard.Listener(on_press=self._on_key_press, on_release=self._on_key_release)
             self.keyboard_listener.start()
             
             # Mouse listener
             self.mouse_listener = mouse.Listener(
-                on_click=self._on_mouse_click,
-                on_scroll=self._on_mouse_scroll
+                on_click=self._on_mouse_click
             )
             self.mouse_listener.start()
 
@@ -87,11 +89,50 @@ class BehavioralMetrics:
             
             # Only hold lock for counter update - minimal time
             with self.lock:
-                if key_name not in self.modifier_keys:
-                    self.key_count += 1
+                # Track modifier state
+                if key_name in ['ctrl', 'cmd']:
+                    self.active_modifiers.add(key_name)
+                elif key_name == 'alt':
+                    self.active_modifiers.add(key_name)
+                else:
+                    # Regular key presses (not modifiers)
+                    if key_name not in self.modifier_keys:
+                        self.key_count += 1
+                    
+                    # Track deletion keys: delete, backspace, and ctrl+z / cmd+z
+                    # (These indicate editorial activity - corrections, undos, etc.)
+                    if key_name in {'delete', 'backspace'}:
+                        self.deletion_key_count += 1
+                    # Detect Ctrl+Z or Cmd+Z (undo/redo)
+                    elif key_name == 'z' and ('ctrl' in self.active_modifiers or 'cmd' in self.active_modifiers):
+                        self.deletion_key_count += 1
+                
                 self.last_activity_time = time.time()
         except Exception as e:
             self.logger.exception("[BehavioralMetrics] Key press error")
+
+    def _on_key_release(self, key):
+        """Handle keyboard release event (track modifier releases)."""
+        try:
+            # Extract key name
+            key_name = None
+            try:
+                if hasattr(key, 'char') and key.char is not None:
+                    key_name = key.char.lower()
+                elif hasattr(key, 'name') and key.name is not None:
+                    key_name = key.name.lower()
+                else:
+                    key_name = str(key).replace("Key.", "").replace("KeyCode(", "").replace(")", "").lower()
+            except (AttributeError, TypeError):
+                key_name = str(key).replace("Key.", "").replace("KeyCode(", "").replace(")", "").lower()
+            
+            # Remove from active modifiers when released
+            with self.lock:
+                if key_name in ['ctrl', 'cmd', 'alt']:
+                    self.active_modifiers.discard(key_name)
+                self.last_activity_time = time.time()
+        except Exception as e:
+            self.logger.exception("[BehavioralMetrics] Key release error")
 
     def _on_mouse_click(self, x, y, button, pressed):
         """Handle mouse click event."""
@@ -116,20 +157,13 @@ class BehavioralMetrics:
         except Exception as e:
             self.logger.exception("[BehavioralMetrics] Click error")
 
-    def _on_mouse_scroll(self, x, y, button, delta):
-        """Handle mouse scroll event."""
-        try:
-            with self.lock:
-                self.scroll_count += 1
-                self.last_activity_time = time.time()
-        except Exception as e:
-            self.logger.exception("[BehavioralMetrics] Scroll error")
+
 
     def get_metrics(self) -> Dict[str, Any]:
         """Get current metrics and calculate rates.
         
         Returns:
-            dict with typing_intensity (KPM), click_rate (CPM), scroll_count
+            dict with typing_intensity (KPM), click_rate (CPM), deletion_key_presses (count)
         """
         with self.lock:
             current_time = time.time()
@@ -142,7 +176,7 @@ class BehavioralMetrics:
             return {
                 'typing_intensity': round(typing_intensity, 2),
                 'mouse_click_rate': round(mouse_click_rate, 2),
-                'mouse_scroll_events': self.scroll_count,
+                'deletion_key_presses': self.deletion_key_count,
                 'key_count': self.key_count,
                 'click_count': self.click_count,
                 'elapsed_sec': elapsed_sec,
@@ -153,8 +187,9 @@ class BehavioralMetrics:
         with self.lock:
             self.key_count = 0
             self.click_count = 0
-            self.scroll_count = 0
+            self.deletion_key_count = 0
             self.last_click_time = 0
+            self.active_modifiers.clear()
             self.start_time = time.time()
             self.last_activity_time = time.time()
 
