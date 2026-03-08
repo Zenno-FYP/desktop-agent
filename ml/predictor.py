@@ -60,13 +60,15 @@ class MLPredictor:
         else:
             # Safe fallback if label mapping file doesn't exist
             # (e.g., for old models trained without this feature)
+            # NEW: 5-class model with psychological context states
             self.label_decoder = {
-                0: 'Focused',
-                1: 'Distracted',
-                2: 'Reading',
-                3: 'Idle'
+                0: 'Flow',
+                1: 'Debugging',
+                2: 'Research',
+                3: 'Communication',
+                4: 'Distracted'
             }
-            print(f"[ML] Using fallback label mapping: {self.label_decoder}")
+            print(f"[ML] Using fallback label mapping (5-class): {self.label_decoder}")
             
         print(f"[ML] Model loaded from {self.model_path}")
     
@@ -75,28 +77,31 @@ class MLPredictor:
         Predict context state with confidence score.
         
         Args:
-            block_metrics (dict): Dictionary containing:
-                - typing_intensity (float)
-                - mouse_click_rate (float)
-                - mouse_scroll_events (int)
-                - idle_duration_sec (float)
-                - total_duration_sec (float)
-                - app_switch_count (int)
-                - project_switch_count (int)
-                - touched_distraction_app (bool)
-                - end_time (datetime or str)
+            block_metrics (dict): Dictionary containing 8-signal metrics:
+                - typing_intensity: KPM (float)
+                - mouse_click_rate: CPM (float)
+                - deletion_key_presses: Count (int)
+                - total_keystrokes: For correction_ratio calculation (int)
+                - idle_duration_sec: Total idle time (float)
+                - total_duration_sec: Block duration (float)
+                - app_switch_count: Unique app count (int)
+                - app_names: List of app names (list)
+                - touched_distraction_app: Boolean (bool)
+                - end_time: Block end time (datetime or str)
         
         Returns:
             tuple: (context_state, confidence_score)
-            Example: ("Focused", 0.92)
+            Example: ("Flow", 0.92)
+            
+            5 context states: Flow, Debugging, Research, Communication, Distracted
         """
-        # Extract features
+        # Extract 8 psychological signals
         features = FeatureExtractor.extract_features(block_metrics)
         
         # Validate features
         if not FeatureExtractor.validate_features(features):
             print(f"⚠️  Invalid features detected: {features}")
-            return "Idle", 0.50  # Fallback to uncertain Idle
+            return "Distracted", 0.50  # Fallback to uncertain Distracted
         
         # Reshape for single prediction
         X = features.reshape(1, -1)
@@ -129,7 +134,7 @@ class MLPredictor:
     
     def predict_with_probabilities(self, block_metrics):
         """
-        Get full probability distribution for all classes.
+        Get full probability distribution for all 5 context states.
         
         Args:
             block_metrics (dict): Block metrics dictionary
@@ -139,10 +144,11 @@ class MLPredictor:
                 'context_state': str,
                 'confidence': float,
                 'probabilities': {
-                    'Focused': float,
+                    'Flow': float,
+                    'Debugging': float,
+                    'Research': float,
+                    'Communication': float,
                     'Distracted': float,
-                    'Reading': float,
-                    'Idle': float,
                 }
             }
         """
@@ -171,76 +177,95 @@ class MLPredictor:
 
 
 def main():
-    """Test ML predictor with sample data."""
+    """Test ML predictor with 8-signal sample data."""
     print("\n" + "="*60)
-    print("TESTING ML PREDICTOR")
+    print("TESTING ML PREDICTOR (5-CLASS, 8-SIGNAL)")
     print("="*60)
     
     # Initialize predictor
     print("\n🔄 Loading ML model...")
     predictor = MLPredictor(model_path='data/models/context_detector.pkl')
     
-    # Test samples
+    # Test samples with 8 psychological signals
     test_samples = [
         {
-            'name': 'Focused coding',
+            'name': 'Flow state (deep focus coding)',
             'metrics': {
-                'typing_intensity': 60.0,
-                'mouse_click_rate': 20.0,
-                'mouse_scroll_events': 2,
-                'idle_duration_sec': 15,
+                'typing_intensity': 140.0,      # High typing
+                'mouse_click_rate': 8.0,        # Low clicks
+                'deletion_key_presses': 15,     # Low corrections
+                'total_keystrokes': 315,        # Calculated
+                'idle_duration_sec': 15,        # Low idle
                 'total_duration_sec': 300,
-                'app_switch_count': 1,
-                'project_switch_count': 0,
+                'app_switch_count': 1,          # Single app
+                'app_names': ['VSCode'],
                 'touched_distraction_app': False,
                 'end_time': datetime(2026, 2, 24, 14, 5),
             }
         },
         {
-            'name': 'Reading documentation',
+            'name': 'Debugging (trial & error with fixes)',
             'metrics': {
-                'typing_intensity': 10.0,
-                'mouse_click_rate': 5.0,
-                'mouse_scroll_events': 30,
-                'idle_duration_sec': 30,
+                'typing_intensity': 75.0,       # Moderate typing
+                'mouse_click_rate': 35.0,       # High clicks
+                'deletion_key_presses': 90,     # High corrections
+                'total_keystrokes': 315,        # High deletion ratio
+                'idle_duration_sec': 30,        # Moderate idle
                 'total_duration_sec': 300,
-                'app_switch_count': 1,
-                'project_switch_count': 0,
+                'app_switch_count': 5,          # Switching between tools
+                'app_names': ['VSCode', 'Chrome', 'Terminal', 'GitHub'],
                 'touched_distraction_app': False,
                 'end_time': datetime(2026, 2, 24, 14, 5),
             }
         },
         {
-            'name': 'Distracted (Discord touching)',
+            'name': 'Research (reading documentation)',
             'metrics': {
-                'typing_intensity': 20.0,
-                'mouse_click_rate': 10.0,
-                'mouse_scroll_events': 10,
-                'idle_duration_sec': 60,
+                'typing_intensity': 20.0,       # Low typing
+                'mouse_click_rate': 25.0,       # Moderate clicks
+                'deletion_key_presses': 5,      # Very few corrections
+                'total_keystrokes': 305,        # Mostly clicking through
+                'idle_duration_sec': 60,        # Reading time
                 'total_duration_sec': 300,
-                'app_switch_count': 5,
-                'project_switch_count': 2,
+                'app_switch_count': 3,          # Jumping between docs
+                'app_names': ['Chrome', 'Firefox', 'VSCode'],
+                'touched_distraction_app': False,
+                'end_time': datetime(2026, 2, 24, 14, 5),
+            }
+        },
+        {
+            'name': 'Communication (chat & meetings)',
+            'metrics': {
+                'typing_intensity': 50.0,       # Message writing
+                'mouse_click_rate': 15.0,       # Interface interaction
+                'deletion_key_presses': 25,     # Some message editing
+                'total_keystrokes': 325,        # Balanced with reading
+                'idle_duration_sec': 90,        # Waiting/listening
+                'total_duration_sec': 300,
+                'app_switch_count': 4,          # Switch between apps
+                'app_names': ['Slack', 'Zoom', 'VSCode', 'Chrome'],
+                'touched_distraction_app': False,
+                'end_time': datetime(2026, 2, 24, 14, 5),
+            }
+        },
+        {
+            'name': 'Distracted (social media break)',
+            'metrics': {
+                'typing_intensity': 30.0,       # Sporadic typing
+                'mouse_click_rate': 65.0,       # Heavy clicking
+                'deletion_key_presses': 10,     # Low corrections
+                'total_keystrokes': 340,        # Mostly click-based
+                'idle_duration_sec': 120,       # High idle
+                'total_duration_sec': 300,
+                'app_switch_count': 8,          # Jumping between many apps
+                'app_names': ['Discord', 'Twitter', 'YouTube', 'Slack', 'VSCode', 'Chrome'],
                 'touched_distraction_app': True,
-                'end_time': datetime(2026, 2, 24, 14, 5),
-            }
-        },
-        {
-            'name': 'Idle (away from desk)',
-            'metrics': {
-                'typing_intensity': 2.0,
-                'mouse_click_rate': 1.0,
-                'mouse_scroll_events': 0,
-                'idle_duration_sec': 280,
-                'total_duration_sec': 300,
-                'app_switch_count': 0,
-                'project_switch_count': 0,
-                'touched_distraction_app': False,
                 'end_time': datetime(2026, 2, 24, 14, 5),
             }
         },
     ]
     
-    print("\n📊 Testing predictions:\n")
+    print("\n📊 Testing 5-class predictions:\n")
     for test in test_samples:
         name = test['name']
         metrics = test['metrics']
@@ -254,11 +279,11 @@ def main():
         for label, prob in sorted(result['probabilities'].items(), 
                                    key=lambda x: x[1], reverse=True):
             bar = '█' * int(prob * 20)
-            print(f"      {label:12s}: {prob:.2%} {bar}")
+            print(f"      {label:15s}: {prob:.2%} {bar}")
         print()
     
     print("="*60)
-    print("✅ ML PREDICTOR READY FOR DEPLOYMENT")
+    print("✅ ML PREDICTOR READY (Flow, Debugging, Research, Communication, Distracted)")
     print("="*60)
 
 

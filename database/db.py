@@ -61,6 +61,9 @@ class Database:
                 timeout=self.timeout,
             )
 
+            # Make rows name-addressable while remaining indexable/iterable.
+            self.conn.row_factory = sqlite3.Row
+
             journal_mode = self._sanitize_journal_mode(self.journal_mode)
             self.conn.execute(f"PRAGMA journal_mode={journal_mode}")
             # Enable foreign keys
@@ -141,6 +144,7 @@ class Database:
                 typing_intensity REAL DEFAULT 0.0,
                 mouse_click_rate REAL DEFAULT 0.0,
                 deletion_key_presses INTEGER DEFAULT 0,
+                mouse_movement_distance REAL NOT NULL DEFAULT 0.0,
                 idle_duration_sec INTEGER DEFAULT 0,
 
                 context_state TEXT,
@@ -228,6 +232,7 @@ class Database:
                 mouse_click_rate_cpm REAL NOT NULL DEFAULT 0.0,
                 total_deletion_key_presses INTEGER NOT NULL DEFAULT 0,
                 total_idle_sec INTEGER NOT NULL DEFAULT 0,
+                total_mouse_movement_distance REAL NOT NULL DEFAULT 0.0,
                 needs_sync INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY (date, project_name),
                 FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
@@ -298,6 +303,7 @@ class Database:
             'typing_intensity': activity_data.get('typing_intensity', 0.0),
             'mouse_click_rate': activity_data.get('mouse_click_rate', 0.0),
             'deletion_key_presses': activity_data.get('deletion_key_presses', 0),
+            'mouse_movement_distance': activity_data.get('mouse_movement_distance', 0.0),
             'idle_duration_sec': activity_data.get('idle_duration_sec', 0),
             'context_state': activity_data.get('context_state'),
             'confidence_score': activity_data.get('confidence_score'),
@@ -309,10 +315,10 @@ class Database:
                 INSERT INTO raw_activity_logs (
                     start_time, end_time, app_name, window_title, duration_sec,
                     project_name, project_path, active_file, detected_language,
-                    typing_intensity, mouse_click_rate, deletion_key_presses, idle_duration_sec,
+                    typing_intensity, mouse_click_rate, deletion_key_presses, mouse_movement_distance, idle_duration_sec,
                     context_state, confidence_score
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 tuple(fields.values())
             )
@@ -343,6 +349,8 @@ class Database:
             raise ValueError("KPM cannot be negative")
         if log_dict.get('mouse_click_rate', 0) < 0:
             raise ValueError("CPM cannot be negative")
+        if log_dict.get('mouse_movement_distance', 0) < 0:
+            raise ValueError("mouse_movement_distance cannot be negative")
         
         # Idle cannot exceed duration
         if log_dict.get('idle_duration_sec', 0) > log_dict['duration_sec']:
@@ -406,30 +414,9 @@ class Database:
         with self._lock:
             cursor = self.conn.execute(query, params)
             rows = cursor.fetchall()
-        
-        # Convert sqlite3.Row to dict using column names
-        result = []
-        for row in rows:
-            result.append({
-                'log_id': row[0],
-                'start_time': row[1],
-                'end_time': row[2],
-                'app_name': row[3],
-                'window_title': row[4],
-                'duration_sec': row[5],
-                'project_name': row[6],
-                'project_path': row[7],
-                'active_file': row[8],
-                'detected_language': row[9],
-                'typing_intensity': row[10],
-                'mouse_click_rate': row[11],
-                'mouse_scroll_events': row[12],
-                'idle_duration_sec': row[13],
-                'context_state': row[14],
-                'confidence_score': row[15],
-            })
-        
-        return result
+
+        # Return dicts keyed by column name (stable across schema changes)
+        return [dict(row) for row in rows]
     
     def update_logs_context(self, log_ids: list, context_state: str, 
                            confidence_score: float) -> int:
@@ -440,7 +427,7 @@ class Database:
         
         Args:
             log_ids: List of log_id integers to update
-            context_state: Context state to set (e.g., "Focused")
+            context_state: Context state to set (Flow/Debugging/Research/Communication/Distracted)
             confidence_score: Confidence score to set (0.0-1.0)
         
         Returns:
@@ -471,7 +458,7 @@ class Database:
         
         Args:
             log_id: ID of the log to update
-            verified_label: The verified context state ("Focused", "Reading", "Distracted", "Idle")
+            verified_label: The verified context state (Flow/Debugging/Research/Communication/Distracted)
         
         Returns:
             True if successful, False otherwise
@@ -520,32 +507,8 @@ class Database:
             (limit,)
         )
         rows = cursor.fetchall()
-        
-        # Convert to dict (matching all columns including verification fields)
-        result = []
-        for row in rows:
-            result.append({
-                'log_id': row[0],
-                'start_time': row[1],
-                'end_time': row[2],
-                'app_name': row[3],
-                'window_title': row[4],
-                'duration_sec': row[5],
-                'project_name': row[6],
-                'project_path': row[7],
-                'active_file': row[8],
-                'detected_language': row[9],
-                'typing_intensity': row[10],
-                'mouse_click_rate': row[11],
-                'mouse_scroll_events': row[12],
-                'idle_duration_sec': row[13],
-                'context_state': row[14],
-                'confidence_score': row[15],
-                'manually_verified_label': row[16],
-                'verified_at': row[17],
-            })
-        
-        return result
+
+        return [dict(row) for row in rows]
 
     def upsert_project(self, project_name, project_path):
         """Insert new project or update last_active_at if exists.
@@ -1009,27 +972,28 @@ class Database:
 
     def get_daily_behavior_by_date(self, date, needs_sync=None):
         """Get all behavior metrics for a given date, optionally filtered by sync status.
-        
+
         Args:
             date: YYYY-MM-DD (local date)
             needs_sync: If True/False, filter by sync status. If None, return all.
-            
+
         Returns:
-            List of dicts with keys: date, project_name, total_keystrokes, total_mouse_clicks,
-                                     total_scroll_events, total_idle_sec, needs_sync
+            List of dicts with keys: date, project_name, typing_intensity_kpm,
+            mouse_click_rate_cpm, total_deletion_key_presses, total_idle_sec, 
+            total_mouse_movement_distance, needs_sync
         """
         if needs_sync is None:
             cursor = self.conn.execute('''
-                SELECT date, project_name, total_keystrokes, total_mouse_clicks, 
-                       total_scroll_events, total_idle_sec, needs_sync
+                SELECT date, project_name, typing_intensity_kpm, mouse_click_rate_cpm,
+                       total_deletion_key_presses, total_idle_sec, total_mouse_movement_distance, needs_sync
                 FROM daily_project_behavior
                 WHERE date = ?
                 ORDER BY project_name
             ''', (date,))
         else:
             cursor = self.conn.execute('''
-                SELECT date, project_name, total_keystrokes, total_mouse_clicks, 
-                       total_scroll_events, total_idle_sec, needs_sync
+                SELECT date, project_name, typing_intensity_kpm, mouse_click_rate_cpm,
+                       total_deletion_key_presses, total_idle_sec, total_mouse_movement_distance, needs_sync
                 FROM daily_project_behavior
                 WHERE date = ? AND needs_sync = ?
                 ORDER BY project_name
@@ -1040,11 +1004,12 @@ class Database:
             result.append({
                 'date': row[0],
                 'project_name': row[1],
-                'total_keystrokes': row[2],
-                'total_mouse_clicks': row[3],
-                'total_scroll_events': row[4],
+                'typing_intensity_kpm': row[2],
+                'mouse_click_rate_cpm': row[3],
+                'total_deletion_key_presses': row[4],
                 'total_idle_sec': row[5],
-                'needs_sync': row[6],
+                'total_mouse_movement_distance': row[6],
+                'needs_sync': row[7],
             })
         return result
 
@@ -1052,12 +1017,13 @@ class Database:
         """Get all behavior rows pending cloud sync (needs_sync = 1).
         
         Returns:
-            List of dicts with keys: date, project_name, total_keystrokes, total_mouse_clicks,
-                                     total_scroll_events, total_idle_sec, needs_sync
+            List of dicts with keys: date, project_name, typing_intensity_kpm,
+            mouse_click_rate_cpm, total_deletion_key_presses, total_idle_sec, 
+            total_mouse_movement_distance, needs_sync
         """
         cursor = self.conn.execute('''
-            SELECT date, project_name, total_keystrokes, total_mouse_clicks, 
-                   total_scroll_events, total_idle_sec, needs_sync
+            SELECT date, project_name, typing_intensity_kpm, mouse_click_rate_cpm,
+                   total_deletion_key_presses, total_idle_sec, total_mouse_movement_distance, needs_sync
             FROM daily_project_behavior
             WHERE needs_sync = 1
             ORDER BY date DESC, project_name
@@ -1068,11 +1034,12 @@ class Database:
             result.append({
                 'date': row[0],
                 'project_name': row[1],
-                'total_keystrokes': row[2],
-                'total_mouse_clicks': row[3],
-                'total_scroll_events': row[4],
+                'typing_intensity_kpm': row[2],
+                'mouse_click_rate_cpm': row[3],
+                'total_deletion_key_presses': row[4],
                 'total_idle_sec': row[5],
-                'needs_sync': row[6],
+                'total_mouse_movement_distance': row[6],
+                'needs_sync': row[7],
             })
         return result
 

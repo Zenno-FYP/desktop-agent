@@ -103,6 +103,8 @@ class ActivitySession:
             'typing_intensity': metrics['typing_intensity'],
             'mouse_click_rate': metrics['mouse_click_rate'],
             'deletion_key_presses': metrics['deletion_key_presses'],
+            # Raw distances for improved block feature extraction (Signal 2)
+            'mouse_movement_distance': float(metrics.get('mouse_movement_distance', 0.0) or 0.0),
             'idle_duration_sec': idle_metrics['idle_duration_sec'],
             # Context state (Phase 2 will populate this with heuristics/ML)
             'context_state': None,
@@ -449,7 +451,7 @@ class DesktopAgent:
             
             # Enhanced debug output with file info
             self.logger.info(
-                "[DB] Inserted log #%s: %s (%ss) | File: %s | Project: %s | KPM:%.1f CPM:%.1f Scrolls:%s Idle:%ss",
+                "[DB] Inserted log #%s: %s (%ss) | File: %s | Project: %s | KPM:%.1f CPM:%.1f Deletions:%s Idle:%ss",
                 log_id,
                 activity_data.get("app_name"),
                 activity_data.get("duration_sec"),
@@ -457,7 +459,7 @@ class DesktopAgent:
                 activity_data.get("project_name"),
                 float(activity_data.get("typing_intensity", 0.0)),
                 float(activity_data.get("mouse_click_rate", 0.0)),
-                activity_data.get("mouse_scroll_events"),
+                activity_data.get("deletion_key_presses", 0),
                 activity_data.get("idle_duration_sec"),
             )
             

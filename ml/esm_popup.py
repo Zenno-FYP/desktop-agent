@@ -71,13 +71,14 @@ class ESMPopup:
             self.daily_max,
         )
 
-    def queue_for_verification(self, log_ids: list, context_state: str, confidence: float):
+    def queue_for_verification(self, log_ids: list, context_state: str, confidence: float, block_metrics: dict = None):
         """Immediately show verification popup if confidence is low and rate limits allow.
         
         Args:
             log_ids: List of log IDs to verify
-            context_state: ML's predicted context ("Focused", "Reading", etc)
+            context_state: Predicted context (ML taxonomy): Flow/Debugging/Research/Communication/Distracted
             confidence: ML's confidence score (0.0-1.0)
+            block_metrics: Optional block metrics dict for showing signal details to user
         """
         if confidence >= self.confidence_threshold:
             return
@@ -103,7 +104,7 @@ class ESMPopup:
         # Run Tk in a background thread so the evaluator thread isn't blocked.
         threading.Thread(
             target=self._display_toast,
-            args=(log_ids, context_state, confidence),
+            args=(log_ids, context_state, confidence, block_metrics or {}),
             daemon=True,
             name="ESMToast",
         ).start()
@@ -136,68 +137,120 @@ class ESMPopup:
         
         return True
 
-    def _display_toast(self, log_ids: list, context_state: str, confidence: float):
-        """Display tkinter borderless toast window with 4 clickable buttons.
+    def _summarize_signals(self, block_metrics: dict) -> str:
+        """Generate human-readable summary of key signals for popup display.
+        
+        Args:
+            block_metrics: Block metrics dict with signals
+            
+        Returns:
+            Short string summarizing key signals (e.g., "KPM: 85 | Velocity: 12 px/s")
+        """
+        signals = []
+        
+        # Signal 0: KPM
+        kpm = block_metrics.get('typing_intensity', 0)
+        if kpm > 0:
+            signals.append(f"KPM:{kpm:.0f}")
+        
+        # Signal 2: Mouse velocity
+        total_duration = block_metrics.get('total_duration_sec', 1)
+        mouse_distance = block_metrics.get('mouse_movement_distance', 0)
+        velocity = mouse_distance / total_duration if total_duration > 0 else 0
+        if velocity > 0:
+            signals.append(f"Velocity:{velocity:.1f}px/s")
+        
+        # Signal 7: Fatigue hours
+        fatigue = block_metrics.get('consecutive_work_hours', 0)
+        if fatigue > 0:
+            signals.append(f"Fatigue:{fatigue:.1f}h")
+        
+        # Signal 1: Correction ratio
+        total_keys = block_metrics.get('total_keystrokes', 1)
+        deletions = block_metrics.get('deletion_key_presses', 0)
+        if total_keys > 0:
+            correction = (deletions / total_keys) * 100
+            if correction > 5:
+                signals.append(f"Corrections:{correction:.0f}%")
+        
+        return " | ".join(signals) if signals else ""
+
+    def _display_toast(self, log_ids: list, context_state: str, confidence: float, block_metrics: dict = None):
+        """Display tkinter popup window with 5 clickable context state buttons (ML taxonomy).
+        
+        Layout: 2x3 grid of buttons for easy selection with visual hierarchy
+        - Top row: Flow, Debugging, Research
+        - Bottom row: Communication, Distracted
         
         Args:
             log_ids: List of log IDs this verification applies to
             context_state: ML's predicted context
             confidence: ML's confidence score
+            block_metrics: Optional block metrics for showing signal details
         """
+        if block_metrics is None:
+            block_metrics = {}
+            
         try:
             # Create hidden root window (necessary for tkinter to work)
             root = tk.Tk()
             root.withdraw()  # Hide it initially
             root.attributes('-alpha', 0)  # Make invisible
             
-            # Create toast window
-            toast = tk.Toplevel(root)
-            toast.attributes('-topmost', True)  # Always on top
-            toast.geometry(self.window_geometry)  # From config
-            toast.attributes('-alpha', 0.95)  # Slight transparency
-            toast.resizable(False, False)
+            # Create popup window with refined styling
+            popup = tk.Toplevel(root)
+            popup.attributes('-topmost', True)  # Always on top
+            popup.geometry("550x280+950+50")  # Slightly wider for 3-column layout
+            popup.resizable(False, False)
+            popup.configure(bg=self.color_bg, highlightthickness=1, highlightbackground="#444444")
             
-            # Configure styling (from config)
-            toast.configure(bg=self.color_bg)
-            
-            # Message frame
-            msg_frame = tk.Frame(toast, bg=self.color_bg)
-            msg_frame.pack(pady=12, padx=15)
+            # ========== HEADER SECTION ==========
+            header_frame = tk.Frame(popup, bg=self.color_bg, height=60)
+            header_frame.pack(fill=tk.X, padx=0, pady=0)
+            header_frame.pack_propagate(False)
             
             # Title
-            title = tk.Label(
-                msg_frame,
-                text="ZENNO Activity Check",
-                font=self.font_title,
+            title_label = tk.Label(
+                header_frame,
+                text="📊 What were you doing?",
+                font=("Arial", 12, "bold"),
                 fg=self.color_text,
                 bg=self.color_bg
             )
-            title.pack()
+            title_label.pack(pady=(10, 5), anchor=tk.W, padx=15)
             
-            # Prediction message
-            msg = f"{context_state} ({confidence:.0%})?"
+            # Prediction message (highlighted)
+            if block_metrics:
+                signal_details = self._summarize_signals(block_metrics)
+                msg = f"Detected: {context_state} ({confidence:.0%})"
+                if signal_details:
+                    msg += f"\n{signal_details}"
+            else:
+                msg = f"Detected: {context_state} ({confidence:.0%})"
+            
             msg_label = tk.Label(
-                msg_frame,
+                header_frame,
                 text=msg,
-                font=self.font_msg,
-                fg=self.color_subtext,
-                bg=self.color_bg
+                font=("Arial", 9),
+                fg="#cccccc",
+                bg=self.color_bg,
+                justify=tk.LEFT
             )
-            msg_label.pack()
+            msg_label.pack(anchor=tk.W, padx=15)
+            
+            # ========== CONTENT SECTION ==========
+            content_frame = tk.Frame(popup, bg=self.color_bg)
+            content_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=12)
             
             # Subtext
-            sub = tk.Label(
-                msg_frame,
-                text="(Is this correct?)",
-                font=self.font_subtext,
-                fg=self.color_subtext,
+            instruction_label = tk.Label(
+                content_frame,
+                text="Is this correct? Click one:",
+                font=("Arial", 9),
+                fg="#999999",
                 bg=self.color_bg
             )
-            sub.pack()
-            
-            # Button frame
-            button_frame = tk.Frame(toast, bg=self.color_bg)
-            button_frame.pack(pady=10, padx=10)
+            instruction_label.pack(anchor=tk.W, pady=(0, 10))
             
             # Store selected button
             selected = {'label': None}
@@ -212,53 +265,104 @@ class ESMPopup:
                     self.popups_today,
                     self.daily_max,
                 )
-                toast.destroy()
+                popup.destroy()
                 root.destroy()
             
-            # Create 4 buttons with colors from config
-            button_labels = ['Focused', 'Reading', 'Distracted', 'Idle']
-            for i, label in enumerate(button_labels):
-                # Alternate button colors (positive for Focused/Reading, negative for Distracted/Idle)
-                is_positive = i < 2
+            # ========== BUTTON GRID (2x3 layout) ==========
+            button_frame = tk.Frame(content_frame, bg=self.color_bg)
+            button_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Button configuration: label -> (row, col, is_positive)
+            button_config = {
+                'Flow': (0, 0, True),
+                'Debugging': (0, 1, True),
+                'Research': (0, 2, True),
+                'Communication': (1, 1, True),
+                'Distracted': (1, 0, False),
+            }
+            
+            buttons = {}
+            for label, (row, col, is_positive) in button_config.items():
                 bg_color = self.color_btn_pos if is_positive else self.color_btn_neg
                 hover_color = self.color_btn_hover_pos if is_positive else self.color_btn_hover_neg
+                
+                # Highlight predicted button with special styling
+                is_predicted = (label == context_state)
+                relief = tk.SUNKEN if is_predicted else tk.RAISED
+                bd = 2 if is_predicted else 1
                 
                 btn = tk.Button(
                     button_frame,
                     text=label,
-                    width=11,
-                    font=self.font_button,
-                    fg=self.color_text,
+                    width=14,
+                    height=2,
+                    font=("Arial", 9, "bold" if is_predicted else "normal"),
+                    fg="white",
                     bg=bg_color,
                     activebackground=hover_color,
-                    relief=tk.RAISED,
-                    bd=1,
+                    relief=relief,
+                    bd=bd,
+                    cursor="hand2",
                     command=lambda l=label: on_button(l)
                 )
-                btn.grid(row=0, column=i, padx=4)
+                
+                # Add hover effect
+                def create_hover_effect(button, orig_bg, hover_bg):
+                    def on_enter(event):
+                        button.config(bg=hover_bg, relief=tk.SUNKEN)
+                    def on_leave(event):
+                        button.config(bg=orig_bg, relief=relief)
+                    button.bind("<Enter>", on_enter)
+                    button.bind("<Leave>", on_leave)
+                    return (on_enter, on_leave)
+                
+                create_hover_effect(btn, bg_color, hover_color)
+                
+                btn.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
+                buttons[label] = btn
+            
+            # Configure grid weights for balanced spacing
+            button_frame.grid_rowconfigure(0, weight=1)
+            button_frame.grid_rowconfigure(1, weight=1)
+            for col in range(3):
+                button_frame.grid_columnconfigure(col, weight=1)
+            
+            # ========== FOOTER SECTION ==========
+            footer_frame = tk.Frame(popup, bg="#1a1a1a", height=25)
+            footer_frame.pack(fill=tk.X, side=tk.BOTTOM)
+            footer_frame.pack_propagate(False)
+            
+            footer_label = tk.Label(
+                footer_frame,
+                text="Auto-closing in 30 seconds | Privacy: Local verification only",
+                font=("Arial", 7),
+                fg="#666666",
+                bg="#1a1a1a"
+            )
+            footer_label.pack(pady=4)
             
             # Auto-dismiss after configured time
             def auto_dismiss():
-                if toast.winfo_exists():
+                if popup.winfo_exists():
                     logger.info("[ESM] Popup auto-dismissed after configured timeout")
-                    toast.destroy()
+                    popup.destroy()
                     root.destroy()
             
-            toast.after(self.auto_dismiss_ms, auto_dismiss)
+            popup.after(self.auto_dismiss_ms, auto_dismiss)
             
             # Show the window and wait for interaction
             root.deiconify()  # Make root visible briefly if needed
-            toast.mainloop()
+            popup.mainloop()
             
         except Exception as e:
-            logger.error(f"[ESM] Error displaying toast: {e}")
+            logger.error(f"[ESM] Error displaying popup: {e}")
 
     def _record_verification(self, log_ids: list, verified_label: str):
         """Record user's verification choice to database.
         
         Args:
             log_ids: List of log IDs to update
-            verified_label: User's correction ("Focused", "Reading", "Distracted", "Idle")
+            verified_label: User's correction (Flow/Debugging/Research/Communication/Distracted)
         """
         try:
             for log_id in log_ids:

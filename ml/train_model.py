@@ -1,10 +1,27 @@
 """
-ML Model Trainer - Phase 3
+ML Model Trainer - Phase 3B (Updated)
 
-Trains an XGBoost classifier on synthetic training data.
+Trains an XGBoost classifier on synthetic training data based on 8 raw signals.
 Saves trained model to data/models/context_detector.pkl for deployment.
 
-Model: XGBClassifier
+8 Input Signals:
+1. typing_kpm - Keystrokes per minute (flow indicator)
+2. correction_ratio - Deletions / Total Keystrokes (struggle indicator)
+3. mouse_px_per_sec - Mouse velocity in pixels/sec (information intake)
+4. mouse_cpm - Mouse clicks per minute (interaction type)
+5. switch_freq - Window switches per minute (focus stability)
+6. app_score - Application productivity weight (-1.0 to 1.0)
+7. idle_ratio - Idle time / Total duration (mental processing)
+8. fatigue_hrs - Hours since start of day (biological context)
+
+5 Output Context States:
+- Flow: Smooth, effortless creation
+- Debugging: Problem solving with trial & error
+- Research: Learning and intake mode
+- Communication: Team collaboration
+- Distracted: Non-work activity
+
+Model: XGBoost Classifier (5-class)
 Expected Accuracy: 92-95% (on synthetic data)
 Inference Time: <5ms per prediction
 """
@@ -29,14 +46,14 @@ class MLModelTrainer:
             model_params (dict): Optional XGBoost hyperparameters
         """
         self.model_params = model_params or {
-            'max_depth': 5,
+            'max_depth': 6,
             'learning_rate': 0.1,
-            'n_estimators': 100,
+            'n_estimators': 150,
             'subsample': 0.8,
             'colsample_bytree': 0.8,
             'random_state': 42,
             'objective': 'multi:softmax',
-            'num_class': 4,  # Focused, Distracted, Reading, Idle
+            'num_class': 5,  # Flow, Debugging, Research, Communication, Distracted
             'verbosity': 0,
         }
         self.model = None
@@ -45,10 +62,11 @@ class MLModelTrainer:
         self.y_train = None
         self.y_test = None
         self.label_encoder = {
-            'Focused': 0,
-            'Distracted': 1,
-            'Reading': 2,
-            'Idle': 3,
+            'Flow': 0,
+            'Debugging': 1,
+            'Research': 2,
+            'Communication': 3,
+            'Distracted': 4,
         }
         self.label_decoder = {v: k for k, v in self.label_encoder.items()}
     
@@ -65,11 +83,16 @@ class MLModelTrainer:
         print(f"Loading training data from {csv_path}...")
         df = pd.read_csv(csv_path)
         
-        # Separate features and labels
+        # Separate features and labels using the 8 signals
         feature_columns = [
-            'typing_intensity', 'click_rate', 'scrolls', 'idle_ratio',
-            'app_switches', 'project_switches', 'touched_distraction',
-            'time_of_day', 'day_of_week'
+            'typing_kpm',           # 1. Typing speed (KPM)
+            'correction_ratio',     # 2. Struggle metric (deletion %)
+            'mouse_px_per_sec',     # 3. Mouse velocity
+            'mouse_cpm',            # 4. Click frequency
+            'switch_freq',          # 5. Window switches/min
+            'app_score',            # 6. App productivity weight
+            'idle_ratio',           # 7. Idle time ratio
+            'fatigue_hrs'           # 8. Hours since day start
         ]
         
         X = df[feature_columns].values
@@ -77,10 +100,11 @@ class MLModelTrainer:
         
         # Create label encoder mapping
         self.label_encoder = {
-            'Focused': 0,
-            'Distracted': 1,
-            'Reading': 2,
-            'Idle': 3,
+            'Flow': 0,
+            'Debugging': 1,
+            'Research': 2,
+            'Communication': 3,
+            'Distracted': 4,
         }
         self.label_decoder = {v: k for k, v in self.label_encoder.items()}
         
@@ -171,9 +195,14 @@ class MLModelTrainer:
         # Feature importance
         feature_importance = self.model.feature_importances_
         feature_names = [
-            'typing_intensity', 'click_rate', 'scrolls', 'idle_ratio',
-            'app_switches', 'project_switches', 'touched_distraction',
-            'time_of_day', 'day_of_week'
+            'typing_kpm',
+            'correction_ratio',
+            'mouse_px_per_sec',
+            'mouse_cpm',
+            'switch_freq',
+            'app_score',
+            'idle_ratio',
+            'fatigue_hrs'
         ]
         
         print("\n📊 Feature Importance:")

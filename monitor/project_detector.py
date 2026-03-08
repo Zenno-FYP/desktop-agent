@@ -244,10 +244,36 @@ class ProjectDetector:
         if 'pycharm' in app_name_lower or 'idea' in app_name_lower:
             return self._parse_pycharm_title(window_title)
         
-        # Generic pattern: extract filename before dash
+        # Browser/generic pattern: extract tab title, removing only the last ` - <browser_name>` if present
         if ' - ' in window_title:
-            parts = window_title.split(' - ')
-            active_file = parts[0].strip()
+            # For browsers (Chrome, Firefox, Edge, Brave, Safari, Opera, etc.),
+            # the format is typically: "Tab Title - Browser Name"
+            # We want to preserve the full tab title and remove only the browser name at the end.
+            
+            # Find the last occurrence of ' - '
+            last_dash_idx = window_title.rfind(' - ')
+            if last_dash_idx != -1:
+                potential_browser = window_title[last_dash_idx + 3:].strip()
+                # Check if the part after the last ' - ' is a known browser name
+                browser_names = {
+                    'chrome', 'chromium', 'google chrome',
+                    'firefox', 'mozilla firefox',
+                    'edge', 'microsoft edge',
+                    'brave', 'brave browser',
+                    'safari',
+                    'opera',
+                    'vivaldi',
+                    'yandex',
+                    'internet explorer', 'iexplore',
+                }
+                if potential_browser.lower() in browser_names:
+                    # Remove the browser name, keep the tab title
+                    active_file = window_title[:last_dash_idx].strip()
+                else:
+                    # Not a recognized browser pattern, keep everything
+                    active_file = window_title.strip()
+            else:
+                active_file = window_title.strip()
             return None, active_file
         
         return None, None

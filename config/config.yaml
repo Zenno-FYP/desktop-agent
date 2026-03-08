@@ -42,128 +42,127 @@ block_evaluator:
   # Startup delay in seconds before first evaluation (allows logs to accumulate)
   startup_delay_sec: 300  # 5 minutes default
 
-# Heuristic rule thresholds for context detection
+# Heuristic rule thresholds for context detection (8-Signal Based Decision Tree)
 # Used by: ContextDetector.detect_context() decision tree
 # Purpose: FALLBACK when ML model unavailable or low-confidence
-# Flow: Applied in priority order - first rule that matches wins
-# Typical accuracy: 75-92% depending on heuristic (see confidence scores)
+# Architecture: Signal-based thresholds that feed a unified decision tree
+# Output states (synced with ML 5-class model): Flow, Debugging, Research, Communication, Distracted
 # Note: Only used if ml_enabled=false OR ml prediction confidence < ml_confidence_threshold
 heuristics:
-  # FOCUSED: High typing + moderate clicks
-  focused_kpm_min: 40         # Minimum KPM for focused work
-  focused_cpm_min: 15         # Minimum CPM for focused work
-  focused_confidence: 0.92    # Confidence score for focused state
   
-  # READING: Low typing + low clicks + active scrolling
-  reading_kpm_max: 20         # Max KPM for reading
-  reading_cpm_max: 10         # Max CPM for reading
-  reading_scrolls_min: 5      # Min scrolls to count as reading
-  reading_confidence: 0.80
+  # ╔════════════════════════════════════════════════════════════════════════════╗
+# ║                    USER-SPECIFIC BEHAVIORAL THRESHOLDS                      ║
+# ║                                                                             ║
+# ║  ⚠️  IMPORTANT: These thresholds are PERSONALIZED for one user's          ║
+# ║                behavioral patterns from 36 observed activity blocks.        ║
+# ║                                                                             ║
+# ║  DO NOT use these for other developers - recalibrate from THEIR data!      ║
+# ║                                                                             ║
+# ║  This user's unique patterns:                                              ║
+# ║  - Research = Pure READING (0 typing) + HIGH clicking (link navigation)    ║
+# ║  - Flow = Variable typing (0-200 KPM) + Moderate mouse (0-16k pixels)     ║
+# ║  - Blocks are VARIABLE duration (5-300 sec), not uniform 5-min            ║
+# ║  - Deletion keys are SPARSE (mostly 0)                                    ║
+# ║                                                                             ║
+# ║  Future: Implement per-user calibration from their activity logs          ║
+# ╚════════════════════════════════════════════════════════════════════════════╝
+  # All units normalized to 5-minute block evaluation window
+  # Key Fix: Switches/hour → Switches per block. Corrected: 4-12/HR is only 2-5/block
   
-  # IDLE: High idle ratio (away from keyboard)
-  idle_ratio_threshold: 0.5   # >50% idle = idle state
-  idle_confidence: 0.85
+  # SIGNAL 0: Typing Intensity (KPM - per minute) - REAL CALIBRATED
+  # Real Flow (n=13): 0-200 KPM, mean=63.60 → Range: 20-150 KPM
+  # Real Research (n=10): ALL ZEROS (0 KPM - pure reading mode!)
+  # NEW PATTERN: kpm < 2 (near-zero) + cpm > 8 = Active reading/link navigation
+  typing_kpm_flow_min: 20            # Minimum for Flow (allows deep thought pauses, 20-150 KPM range)
+  typing_kpm_research_max: 1         # Maximum for Research (reading = 0 typing, tolerance=1)
+  typing_kpm_pure_reading: 2         # Threshold for \"pure reading\" mode (0 typing + high clicks = Research)
   
-  # DISTRACTED: Distraction apps or low activity
-  distracted_confidence: 0.75
-  distracted_immediate_confidence: 0.85  # With distraction app + low kpm
-  distracted_immediate_kpm_max: 30
-
-# App Categorization Settings
-# Used by: ContextDetector (analyze/context_detector.py)
-# Purpose: Classify apps as productive, distraction, or neutral for context detection
-# In detail:
-#   - productivity_apps: Apps that indicate focused/research work (IDEs, browsers, terminals)
-#     Used in _classify_app() to distinguish RESEARCH (multiple productivity apps) from DISTRACTION
-#   - distraction_apps: Social media, entertainment, messaging apps
-#     Used in is_distraction_app() and BlockEvaluator/ContextDetector feature extraction
-#   - custom lists allow users to add/remove apps without modifying code
-app_categorization:
-  # Productivity apps (development tools, communication, browsers for research)
-  # Used to distinguish RESEARCH context (multiple productivity apps) from DISTRACTION
-  # Examples: VS Code, PyCharm, browsers, terminals, Slack, Teams (work comms)
-  productivity_apps:
-    - code
-    - code.exe
-    - pycharm
-    - pycharm.exe
-    - idea
-    - idea.exe
-    - sublime
-    - sublime.exe
-    - vim
-    - vi
-    - chrome
-    - chrome.exe
-    - msedge
-    - msedge.exe
-    - firefox
-    - firefox.exe
-    - terminal
-    - terminal.exe
-    - cmd
-    - cmd.exe
-    - powershell
-    - powershell.exe
-    - explorer
-    - explorer.exe
-    - visual studio
-    - devenv.exe
-    - git
-    - git.exe
-    - notepad
-    - notepad.exe
-    - github desktop
-    - gitkraken
-    - slack
-    - teams
-    - teams.exe
+  # SIGNAL 1: Correction Ratio (deletion_keys / total_keystrokes)
+  # PRIMARY DIFFERENTIATOR between DEBUGGING and FLOW
+  # DEBUGGING: >12% corrections (the "stuck" signal)
+  # FLOW: <8% corrections (confident typing)
+  # Ambiguous zone: 8-12% (resolved by other signals)
+  correction_ratio_debug_min: 0.12   # > 12% = DEBUGGING (trial & error)
+  correction_ratio_flow_max: 0.08    # < 8% = FLOW (confident, minimal fixes)
   
-  # Distraction apps (social media, entertainment, messaging)
-  # Used by: 
-  #   1. ContextDetector.is_distraction_app() - checks if app visit is distraction
-  #   2. BlockEvaluator - marks touched_distraction_app for context inference
-  # Behavior: Substring matching on lowercased app name (e.g., "discord" matches "discord.exe")
-  distraction_apps:
-    - discord
-    - discord.exe
-    - telegram
-    - telegram.exe
-    - whatsapp
-    - whatsapp.exe
-    - twitter
-    - x.exe
-    - instagram
-    - instagram.exe
-    - tiktok
-    - tiktok.exe
-    - youtube
-    - youtube.exe
-    - facebook
-    - facebook.exe
-    - reddit
-    - reddit.exe
-    - twitch
-    - twitch.exe
-    - spotify
-    - spotify.exe
-    - netflix
-    - netflix.exe
-    - hulu
-    - hulu.exe
-    - pinterest
-    - pinterest.exe
-    - snapchat
-    - snapchat.exe
-    - messenger
+  # SIGNAL 2: Mouse Velocity (px/sec, CORRECTED for REAL OBSERVED DATA)
+  # Real observation: 500-20,000 pixels per 5-min block = 1.67-66.7 px/sec max
+  # NOTE: Scrolling is bursty (not continuous), high idle_ratio reflects reading
+  # FLOW: 10-45 px/sec (controlled navigation, thinking pauses)
+  # RESEARCH: 30-70 px/sec (bursty scrolling with reading time = high idle)
+  # DEBUGGING: 20-55 px/sec (scattered navigation between files/errors)
+  # DISTRACTED: 0-15 px/sec (video) OR 25-67 px/sec (social scrolling)
+  mouse_velocity_flow_max: 45        # Max px/sec for Flow (was 90 - too high for real data)
+  mouse_velocity_research_min: 30    # Min px/sec for Research (was 100 - unrealistic scrolling)
+  mouse_velocity_debug_min: 20       # Min px/sec for Debugging (was 40)
+  mouse_velocity_debug_max: 55       # Max px/sec for Debugging (was 150 - unrealistic)
+  mouse_velocity_distraction_high: 70   # High distraction threshold (was 200 - unrealistic)
   
-  # Custom distraction apps (additional apps to add to the list above)
-  # Format: app names to monitor as distractions
-  custom_distraction_apps: []
+  # SIGNAL 3: Mouse Click Rate (CPM - per minute) - REAL CALIBRATED
+  # Real Flow (n=13): 0-12 CPM, mean=3.28 (LOW - mostly navigation)
+  # Real Research (n=10): 1.16-35.98 CPM, mean=15.71 (HIGH - clicking links, expanding blocks)
+  # KEY: Research = HIGH clicks + ZERO typing = Link navigation in reading
+  mouse_cpm_research_light: 8        # Min CPM for Research (was 10 - real min is 1.16, mean 15.71)
+  mouse_cpm_research_high: 30        # Max CPM for Research (clicking limit, real max 35.98)
+  mouse_cpm_distraction_high: 20     # Min CPM for Distraction (high interaction)
   
-  # Custom productivity apps (add to default list)
-  custom_productivity_apps: []
-
+  # SIGNAL 4: App Switch Frequency (NOTE: PER 5-MIN BLOCK, NOT PER HOUR)
+  # Unit Fix Critical: 4-12 switches/hour = only 0.3-1.0 switches/block
+  #                    Our metric is switches PER BLOCK (5 minutes), not per hour
+  # FLOW: <3 switches per block (locked in, no context switching)
+  # DEBUGGING: >4 switches per block (jumping between IDE, browser, terminal)
+  # DISTRACTED: >8 switches per block (erratic tab/app switching)
+  switches_per_block_debug_min: 4    # Minimum switches for Debugging pattern
+  switches_per_block_distraction_min: 8  # Minimum switches for Distraction pattern
+  
+  # SIGNAL 5: App Score (time-weighted average, -1.0 to 1.0)
+  # Unit Fix: Use weighted average by duration, not simple mean
+  # Example: 4 min IDE (1.0) + 1 min Spotify (-1.0) = (1.0×240 + (-1.0)×60) / 300 = 0.6
+  # FLOW: >0.5 (mostly productive apps)
+  # RESEARCH: 0.5 (neutral, browser)
+  # DISTRACTION: <-0.5 (mostly distraction apps)
+  app_score_flow_min: 0.5            # Min app_score for Flow
+  app_score_research: 0.5            # Expected app_score for Research (browser)
+  app_score_distraction_max: -0.5    # Max app_score for Distraction (mostly off-task)
+  
+  # SIGNAL 6: Idle Ratio (idle_duration_sec / total_duration_sec)
+  # Thinking time is OK (20-40% idle is normal for coding)
+  # RESEARCH: 20-50% idle (reading/absorbing information)
+  # DISTRACTION: 40-80% idle (staring at entertainment)
+  idle_ratio_research_min: 0.2       # Min idle ratio for Research
+  idle_ratio_research_max: 0.5       # Max idle ratio for Research
+  
+  # SIGNAL 7: Consecutive Work Hours (session-based fatigue)
+  # Unit Fix: Uses NOW() - SESSION_START, NOT time-of-day
+  # Resets on 30+ minute breaks (break_threshold)
+  # CRITICAL: This is NOT "time of day" (2 PM means nothing)
+  # It's "hours worked in current session" (same person is fresh at 2 PM after lunch)
+  fatigue_moderate_hours: 4.0        # >4 consecutive hours = fatigue starting (allow lower KPM)
+  fatigue_high_hours: 6.0            # >6 consecutive hours = significant fatigue (reduce confidence)
+  session_reset_idle_minutes: 30     # Break >30 min = reset session counter (user is fresh)
+  
+  # CONFIDENCE SCORES (final tuple returned by detect_context)
+  confidence_flow: 0.92              # Good signals, fresh user
+  confidence_flow_fatigued_moderate: 0.85  # >4 hours worked, some fatigue
+  confidence_flow_fatigued_high: 0.75     # >6 hours worked, high fatigue
+  confidence_debugging: 0.85         # >12% corrections + other debug signals
+  confidence_research: 0.80          # Low typing + high scrolling
+  confidence_communication: 0.80     # Slack/Teams app detected
+  confidence_distracted: 0.75        # Off-task app + no project context
+  confidence_distracted_sticky_project: 0.60  # Off-task app BUT with project_name (reading in project)
+  confidence_ambiguous: 0.55         # Unclear classification
+  
+  # ========== CONTEXT-AWARE IDLE HANDLING (NEW) ==========
+  # PRIORITY 0: Heuristic pre-check for high-idle blocks (idle_ratio > 0.70)
+  # "Where was the user when they went silent?"
+  # Note: These override ML model for idle_ratio > 0.70
+  
+  idle_ratio_threshold: 0.70         # Threshold for context-aware idle handling
+  
+  confidence_communication_listening: 0.75  # User idle in Zoom/Teams/Slack (active listening)
+  confidence_research_thinking: 0.65       # User idle in IDE (deep thinking/planning)
+  confidence_research_tutorial: 0.70       # User idle with project open (watching tutorial/waiting)
+  confidence_distracted_away: 0.75         # User idle without project (away/lunch/netflix)
 
 # Project context detection (IDE titles + safe filesystem probing)
 # Used by: ProjectDetector class (monitor/project_detector.py)
@@ -385,6 +384,111 @@ ml_model_path: ./data/models/context_detector.pkl
 # Fallback: If config missing, defaults to 0.5 (50%)
 ml_confidence_threshold: 0.5
 
+# ML App Productivity Scoring & Application Categorization (Single Source of Truth)
+#
+# This section defines how all apps are categorized across the system:
+#   1. FeatureExtractor (ML model): Uses these lists to calculate Signal 5 (app_score)
+#   2. ContextDetector (Heuristic fallback): Uses these lists to classify apps
+#   3. BlockEvaluator: Uses these to determine context and mark touched_distraction_app
+#
+# CONSOLIDATION BENEFIT:
+#   - No duplicate app lists scattered across config
+#   - Heuristic and ML make identical app categorization decisions
+#   - Single update point for app classifications
+#   - Easier to customize user app categorizations
+#
+# STRUCTURE (4-tier scoring for ML):
+#   - productive_apps: IDEs, editors (Score: 1.0) → Indicates "Flow" context
+#   - communication_apps: Chat, email, meetings (Score: 0.0) → Indicates "Communication" context
+#   - distraction_apps: Social media, entertainment (Score: -1.0) → Indicates "Distracted" context
+#   - neutral_apps: Browsers, documentation tools (Score: 0.5) → Context depends on other signals
+#
+# HOW HEURISTIC USES THIS:
+#   - productive_apps: Indicates "Focused" state when combined with high KPM
+#   - distraction_apps: Immediate trigger for "Distracted" state
+#   - communication_apps and neutral_apps: Ignored by heuristic (ML-specific fine-tuning)
+#
+# EXAMPLES:
+#   - VSCode (productive) + high KPM → Flow
+#   - Discord (distraction) + variable KPM → Distracted
+#   - Chrome (neutral) + high mouse → Research (depends on other signals)
+#
+# NOTE: The old app_categorization section is deprecated. All app lists are now here (ml_app_scoring).
+# To customize: Add/remove apps from the relevant list below. Both heuristic and ML will use them.
+ml_app_scoring:
+  # Productive apps (IDEs, editors) - Score: 1.0
+  # Used in: Flow, Debugging context states
+  # NOTE: App names are base names without .exe (extraction logic strips extensions)
+  productive_apps:
+    - vscode
+    - visual studio code
+    - code
+    - pycharm
+    - pycharmce
+    - intellij
+    - idea
+    - webstorm
+    - sublime
+    - sublime text
+    - neovim
+    - nvim
+    - vim
+    - emacs
+    - atom
+  
+  # Communication apps (chat, meetings, email) - Score: 0.0
+  # Used in: Communication context state
+  # NOTE: App names are base names without .exe (extraction logic strips extensions)
+  communication_apps:
+    - slack
+    - teams
+    - microsoft teams
+    - telegram
+    - whatsapp
+    - zoom
+    - meet
+    - google meet
+    - outlook
+    - mail
+    - discord
+  
+  # Distraction apps (social media, entertainment, gaming) - Score: -1.0
+  # Used in: Distracted context state
+  # NOTE: App names are base names without .exe (extraction logic strips extensions)
+  distraction_apps:
+    - discord
+    - twitter
+    - x
+    - youtube
+    - reddit
+    - facebook
+    - instagram
+    - tiktok
+    - twitch
+    - spotify
+    - netflix
+  
+  # Neutral apps (browsers, documentation, tools) - Score: 0.5
+  # Used in: Any state, depending on other signals (KPM, mouse, idle)
+  # NOTE: App names are base names without .exe (extraction logic strips extensions)
+  neutral_apps:
+    - chrome
+    - google chrome
+    - firefox
+    - safari
+    - edge
+    - msedge
+    - microsoft edge
+    - opera
+    - notion
+    - confluence
+    - jira
+    - github
+    - github desktop
+    - gitlab
+    - bitbucket
+
+
 ## PHASE 3B: Experience Sampling Method (ESM) Settings
 
 # ESM Popup configuration for ground-truth data collection
@@ -412,17 +516,17 @@ esm_popup:
   # UI Settings
   ui:
     auto_dismiss_seconds: 30   # Auto-close popup after 30 seconds
-    window_geometry: "450x180+1050+20"  # Size and position (center-right, fully visible)
+    window_geometry: "550x280+950+50"  # Size and position (wider for 3-col button layout)
     
     # Colors (hex format)
     colors:
-      background: "#2b2b2b"      # Dark background
+      background: "#2b2b2b"      # Dark background (charcoal)
       text: "#ffffff"            # White text
-      subtext: "#888888"         # Gray subtext
-      button_positive: "#1a7f12" # Green (Focused, Reading)
-      button_negative: "#7f1212" # Red (Distracted, Idle)
-      button_hover_pos: "#2a9f22"    # Green hover
-      button_hover_neg: "#9f2222"    # Red hover
+      subtext: "#cccccc"         # Light gray subtext
+      button_positive: "#1a7f12" # Green (Flow, Debugging, Research, Communication - work states)
+      button_negative: "#7f1212" # Red (Distracted - off-task state)
+      button_hover_pos: "#2a9f22"    # Bright green hover
+      button_hover_neg: "#9f2222"    # Bright red hover
     
     # Typography
     fonts:

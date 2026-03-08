@@ -85,6 +85,11 @@ class BlockEvaluator:
         
         # Phase 4: Initialize ETL Pipeline (Maestro) for coordinating all aggregators
         self.etl_pipeline = ETLPipeline(db, config=config)
+        
+        # Signal 7: Consecutive work hours tracking (resets on long breaks)
+        self.consecutive_work_hours = 0.0  # Hours worked since last break
+        self.last_block_end_time = datetime.now()  # Track last block time
+        self.break_threshold_sec = 1800  # 30 minutes - reset if idle/gap exceeds this
     
     def _init_esm_popup(self) -> None:
         """Initialize ESM popup handler for ground-truth collection."""
@@ -230,6 +235,26 @@ class BlockEvaluator:
             # Add end_time for feature extraction (hour of day and day of week)
             block_metrics['end_time'] = now
             
+            # Update consecutive work hours (Signal 7)
+            # Calculate gap since last evaluation
+            time_gap_sec = (now - self.last_block_end_time).total_seconds()
+            
+            # Reset consecutive work if gap > 30 min (user took a break)
+            if time_gap_sec > self.break_threshold_sec:
+                self.consecutive_work_hours = 0.0
+            
+            # Add block duration to consecutive hours
+            self.consecutive_work_hours += self.block_duration_sec / 3600
+            
+            # Clamp to reasonable max (24 hours, prevents overflow)
+            self.consecutive_work_hours = min(self.consecutive_work_hours, 24.0)
+            
+            # Add to block_metrics for feature extraction
+            block_metrics['consecutive_work_hours'] = self.consecutive_work_hours
+            
+            # Update last block time for next evaluation
+            self.last_block_end_time = now
+            
             # Evaluate using ML model (with heuristic fallback)
             context_state, confidence_score = self._predict_context(block_metrics)
             
@@ -252,7 +277,8 @@ class BlockEvaluator:
                 self.esm_popup.queue_for_verification(
                     log_ids=log_ids,
                     context_state=context_state,
-                    confidence=confidence_score
+                    confidence=confidence_score,
+                    block_metrics=block_metrics
                 )
             
             # Phase 4: Run ETL pipeline (Maestro coordinates all aggregations)
@@ -306,85 +332,118 @@ class BlockEvaluator:
             return self.context_detector.detect_context(block_metrics)
     
     def _aggregate_block_metrics(self, logs: list) -> dict:
-        """Aggregate behavioral metrics from all sessions in a block.
+        """Aggregate behavioral metrics from all sessions in a block (5 minutes).
         
-        Takes individual session metrics and combines them into block-level metrics
-        that represent the developer's overall behavioral state during the block.
+        Corrects for human-calibrated signals:
+        - app_sessions: List of {'app_name', 'duration_sec'} for TIME-WEIGHTED app_score
+        - app_switch_count: Actual app transitions (not just unique apps)
+        - project_name: Sticky project (None = off-task, key for distraction filtering)
+        - mouse_scroll_events: Count of scroll events
         
         Args:
             logs: List of activity log dicts from query_logs()
         
         Returns:
-            Dictionary of aggregated metrics:
-                - typing_intensity: Effective KPM for the block
-                - mouse_click_rate: Effective CPM for the block
-                - mouse_scroll_events: Total scrolls across all sessions
-                - idle_duration_sec: Total idle time in block
-                - total_duration_sec: Total block time (typically 300 sec)
-                - app_switch_count: Number of unique apps touched
-                - project_switch_count: Number of unique projects touched
-                - touched_distraction_app: True if any distraction app was used during block
+            Dictionary of aggregated metrics for 8-signal extraction
         """
         if not logs:
             return {
                 'typing_intensity': 0,
                 'mouse_click_rate': 0,
-                'mouse_scroll_events': 0,
+                'deletion_key_presses': 0,
+                'total_keystrokes': 0,
                 'idle_duration_sec': 0,
                 'total_duration_sec': self.block_duration_sec,
+                'app_sessions': [],
                 'app_switch_count': 0,
-                'project_switch_count': 0,
-                'touched_distraction_app': False,
+                'mouse_movement_distance': 0,
+                'mouse_scroll_events': 0,
+                'project_name': None,
+                'end_time': datetime.now(),
             }
         
-        # Sum up raw quantities
+        # === Aggregation for 8 signals ===
         total_typing_events = 0
         total_click_events = 0
-        total_scroll_events = 0
+        total_deletion_keys = 0
+        total_keystrokes = 0
+        total_mouse_movement_distance = 0.0
         total_idle_duration = 0
         total_session_duration = 0
-        unique_apps = set()
-        unique_projects = set()
-        touched_distraction = False
+        total_scroll_events = 0
         
-        for log in logs:
-            # Calculate events from rates and durations
+        # === App tracking (build sessions with durations) ===
+        app_sessions = []  # List of {'app_name', 'duration_sec'}
+        app_duration_map = {}  # Track time per app for weighted scoring
+        current_app = None
+        app_switch_count = 0
+        
+        # === Project tracking (sticky: use any non-NULL project in block) ===
+        project_name = None
+        
+        # Sort logs by timestamp to track app transitions
+        logs_sorted = sorted(logs, key=lambda x: x.get('start_time', datetime.now()))
+        
+        for log in logs_sorted:
+            # === Base signal aggregation ===
             session_duration = log.get('duration_sec', 0)
             kpm = log.get('typing_intensity', 0)
             cpm = log.get('mouse_click_rate', 0)
             
-            # Convert KPM back to total keystrokes in this session
             typing_events = (kpm * session_duration) / 60
             click_events = (cpm * session_duration) / 60
             
             total_typing_events += typing_events
             total_click_events += click_events
-            total_scroll_events += log.get('mouse_scroll_events', 0)
+            total_deletion_keys += log.get('deletion_key_presses', 0)
+            total_keystrokes += int(round(typing_events))
+            total_mouse_movement_distance += float(log.get('mouse_movement_distance', 0.0) or 0.0)
             total_idle_duration += log.get('idle_duration_sec', 0)
             total_session_duration += session_duration
+            total_scroll_events += log.get('mouse_scroll_events', 0)
             
-            # Track unique apps and projects
-            if log.get('app_name'):
-                unique_apps.add(log['app_name'].lower())
-                # Check if this app is a distraction app
-                if self.context_detector.is_distraction_app(log['app_name']):
-                    touched_distraction = True
+            # === App session tracking (for time-weighted scoring) ===
+            app_name = log.get('app_name', 'unknown').strip()
+            if app_name != current_app:
+                if current_app is not None:
+                    app_switch_count += 1
+                current_app = app_name
             
-            if log.get('project_name'):
-                unique_projects.add(log['project_name'].lower())
+            # Accumulate duration per app
+            app_duration_map[app_name] = app_duration_map.get(app_name, 0) + session_duration
+            
+            # === Sticky project (use first non-NULL or any non-NULL in block) ===
+            if project_name is None:
+                log_project = log.get('project_name')
+                if log_project:
+                    project_name = log_project
         
-        # Convert back to rates
-        total_duration = max(total_session_duration, 1)  # Avoid divide by zero
+        # Convert app_duration_map → app_sessions list
+        for app_name, duration in app_duration_map.items():
+            app_sessions.append({
+                'app_name': app_name,
+                'duration_sec': duration,
+            })
+        
+        # Convert aggregated counts back to rates
+        total_duration = max(total_session_duration, 1)
         block_kpm = (total_typing_events / total_duration) * 60
         block_cpm = (total_click_events / total_duration) * 60
+        
+        # Get end time from last log
+        end_time = logs_sorted[-1].get('end_time', datetime.now()) if logs_sorted else datetime.now()
         
         return {
             'typing_intensity': block_kpm,
             'mouse_click_rate': block_cpm,
-            'mouse_scroll_events': int(total_scroll_events),
+            'deletion_key_presses': int(total_deletion_keys),
+            'total_keystrokes': int(total_keystrokes),
+            'mouse_movement_distance': float(total_mouse_movement_distance),
             'idle_duration_sec': int(total_idle_duration),
             'total_duration_sec': total_duration,
-            'app_switch_count': len(unique_apps),
-            'project_switch_count': len(unique_projects),
-            'touched_distraction_app': touched_distraction,
+            'app_sessions': app_sessions,  # For time-weighted app_score
+            'app_switch_count': app_switch_count,  # Actual transitions
+            'mouse_scroll_events': total_scroll_events,
+            'project_name': project_name,  # Sticky project differentiator
+            'end_time': end_time,
         }
