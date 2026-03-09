@@ -67,13 +67,14 @@ heuristics:
 # ║  Future: Implement per-user calibration from their activity logs          ║
 # ╚════════════════════════════════════════════════════════════════════════════╝
   # All units normalized to 5-minute block evaluation window
-  # Key Fix: Switches/hour → Switches per block. Corrected: 4-12/HR is only 2-5/block
+  # Key Fix: Switches/hour => Switches per block. Corrected: 4-12/HR is only 2-5/block
   
-  # SIGNAL 0: Typing Intensity (KPM - per minute) - REAL CALIBRATED
-  # Real Flow (n=13): 0-200 KPM, mean=63.60 → Range: 20-150 KPM
-  # Real Research (n=10): ALL ZEROS (0 KPM - pure reading mode!)
-  # NEW PATTERN: kpm < 2 (near-zero) + cpm > 8 = Active reading/link navigation
-  typing_kpm_flow_min: 20            # Minimum for Flow (allows deep thought pauses, 20-150 KPM range)
+  # SIGNAL 0: Typing Intensity (KPM - per minute) - REAL CALIBRATED FROM 52 BLOCKS
+  # Real Flow (n=36): 0-200 KPM, mean=35.9, median=0 (58% are ZERO - reading code!)
+  # Real Research (n=11): ALL ZEROS (0 KPM - pure reading mode!)
+  # FINDING: 58% of Flow blocks have ZERO typing (examining code, thinking)
+  # This is NORMAL - developers read before/after typing
+  typing_kpm_flow_min: 0             # Minimum for Flow (allow reading code, zero is normal!)
   typing_kpm_research_max: 1         # Maximum for Research (reading = 0 typing, tolerance=1)
   typing_kpm_pure_reading: 2         # Threshold for \"pure reading\" mode (0 typing + high clicks = Research)
   

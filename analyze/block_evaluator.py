@@ -87,9 +87,13 @@ class BlockEvaluator:
         self.etl_pipeline = ETLPipeline(db, config=config)
         
         # Signal 7: Consecutive work hours tracking (resets on long breaks)
+        # IMPROVED: Restore from database on startup (don't reset work session)
         self.consecutive_work_hours = 0.0  # Hours worked since last break
         self.last_block_end_time = datetime.now()  # Track last block time
         self.break_threshold_sec = 1800  # 30 minutes - reset if idle/gap exceeds this
+        
+        # Restore fatigue counter from last log (prevents reset on agent restart)
+        self._restore_fatigue_from_database()
     
     def _init_esm_popup(self) -> None:
         """Initialize ESM popup handler for ground-truth collection."""
@@ -144,6 +148,76 @@ class BlockEvaluator:
         except Exception as e:
             self.logger.exception("Failed to load ML model; using heuristic fallback")
             self.ml_available = False
+    
+    def _restore_fatigue_from_database(self) -> None:
+        """Restore consecutive work hours from last log on startup.
+        
+        BUGFIX: When agent restarts, it should not reset the user's work session.
+        This queries the last activity log and calculates:
+        1. Time since last activity: If > 30 min, reset consecutive_work_hours to 0
+        2. If < 30 min, estimate consecutive hours from last log's timestamp onwards
+        
+        This maintains the "session fatigue" counter across agent restarts.
+        """
+        try:
+            # Query the most recent log from database
+            query = """
+                SELECT end_time FROM raw_activity_logs 
+                ORDER BY end_time DESC LIMIT 1
+            """
+            result = self.db.conn.execute(query).fetchone()
+            
+            if not result:
+                # No previous logs, start fresh
+                self.consecutive_work_hours = 0.0
+                self.last_block_end_time = datetime.now()
+                self.logger.info("[BlockEvaluator] No previous logs found, starting with fresh fatigue counter")
+                return
+            
+            # Parse last log's end time
+            last_end_time_str = result[0]
+            try:
+                # Handle ISO format: 2026-03-02T15:30:45.123456
+                if 'T' in last_end_time_str:
+                    last_end_time = datetime.fromisoformat(last_end_time_str)
+                else:
+                    # Handle space-separated format: 2026-03-02 15:30:45
+                    last_end_time = datetime.strptime(last_end_time_str, '%Y-%m-%d %H:%M:%S')
+            except (ValueError, TypeError) as e:
+                self.logger.warning(f"Could not parse last_end_time '{last_end_time_str}': {e}")
+                self.consecutive_work_hours = 0.0
+                self.last_block_end_time = datetime.now()
+                return
+            
+            now = datetime.now()
+            time_gap_sec = (now - last_end_time).total_seconds()
+            
+            # Determine if user took a break (> 30 min gap = reset)
+            if time_gap_sec > self.break_threshold_sec:
+                self.consecutive_work_hours = 0.0
+                self.logger.info(
+                    "[BlockEvaluator] Large gap since last activity (%.0f min) > break threshold (%.0f min), "
+                    "resetting consecutive work hours",
+                    time_gap_sec / 60, self.break_threshold_sec / 60
+                )
+            else:
+                # Estimate consecutive hours: assume continuous work from last_end_time
+                # This assumes the user was working before we restarted
+                gap_hours = time_gap_sec / 3600
+                self.consecutive_work_hours = max(gap_hours, 0.1)  # At least 0.1 hours
+                self.logger.info(
+                    "[BlockEvaluator] Restored consecutive work hours from last log: %.2f hours "
+                    "(gap: %.1f minutes)",
+                    self.consecutive_work_hours, time_gap_sec / 60
+                )
+            
+            # Update last_block_end_time to now
+            self.last_block_end_time = now
+            
+        except Exception as e:
+            self.logger.exception("[BlockEvaluator] Error restoring fatigue from database, starting fresh")
+            self.consecutive_work_hours = 0.0
+            self.last_block_end_time = datetime.now()
     
     def start(self) -> None:
         """Start the background evaluator thread.
@@ -304,12 +378,41 @@ class BlockEvaluator:
     def _predict_context(self, block_metrics: dict) -> tuple:
         """Predict context state using ML model with heuristic fallback.
         
+        Implements IDLE CIRCUIT BREAKER (PRIORITY 0):
+        If idle_ratio > 0.70 (70%), bypass ML entirely and use heuristic.
+        Reason: ML is trained on activity data; cannot classify from silence.
+        
         Args:
             block_metrics: Aggregated metrics dictionary
         
         Returns:
             Tuple of (context_state: str, confidence_score: float)
         """
+        from ml.feature_extractor import FeatureExtractor
+        
+        # PRIORITY 0: IDLE CIRCUIT BREAKER
+        # Extract idle_ratio to check if user is mostly idle
+        idle_duration_sec = float(block_metrics.get('idle_duration_sec', 0))
+        total_duration_sec = float(block_metrics.get('total_duration_sec', 1))
+        idle_ratio = idle_duration_sec / max(total_duration_sec, 1)
+        idle_ratio = float(min(idle_ratio, 1.0))
+        
+        # Threshold from config or heuristic default (70%)
+        idle_threshold = 0.70
+        if self.context_detector and hasattr(self.context_detector, 'idle_ratio_threshold'):
+            idle_threshold = self.context_detector.idle_ratio_threshold
+        
+        if idle_ratio > idle_threshold:
+            # High idle: Use heuristic's context-aware idle handling
+            # (Communication/Research/Distracted based on app_score and other signals)
+            context_state, confidence_score = self.context_detector.detect_context(block_metrics)
+            self.logger.info(
+                "[BlockEvaluator] Idle Circuit Breaker: idle_ratio=%.1f%% > threshold=%.1f%% → %s (%.0f%%)",
+                idle_ratio * 100, idle_threshold * 100, context_state, confidence_score * 100
+            )
+            return context_state, confidence_score
+        
+        # Normal flow: Use ML if available, heuristic if not
         if self.ml_available:
             try:
                 # Get ML prediction with confidence
@@ -321,11 +424,14 @@ class BlockEvaluator:
                     return context_state, confidence_score
                 
                 # Otherwise fall back to heuristic
-                print(f"[BlockEvaluator] Low ML confidence ({confidence_score:.0%}) < threshold ({self.ml_confidence_threshold:.0%}), using heuristic")
+                self.logger.info(
+                    "[BlockEvaluator] Low ML confidence (%.0f%%) < threshold (%.0f%%), using heuristic",
+                    confidence_score * 100, self.ml_confidence_threshold * 100
+                )
                 return self.context_detector.detect_context(block_metrics)
                 
             except Exception as e:
-                print(f"[BlockEvaluator] ML prediction failed: {e}, falling back to heuristic")
+                self.logger.exception("ML prediction failed, falling back to heuristic")
                 return self.context_detector.detect_context(block_metrics)
         else:
             # Use heuristic if ML not available

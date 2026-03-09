@@ -11,6 +11,7 @@ Features:
 - Fallback to heuristic if model unavailable
 """
 
+import logging
 import joblib
 import numpy as np
 from pathlib import Path
@@ -23,6 +24,10 @@ except ModuleNotFoundError:
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from ml.feature_extractor import FeatureExtractor
+
+
+# Configure logging for this module
+logger = logging.getLogger(__name__)
 
 
 class MLPredictor:
@@ -56,7 +61,7 @@ class MLPredictor:
         encoder_path = self.model_path.replace('.pkl', '_classes.pkl')
         if Path(encoder_path).exists():
             self.label_decoder = joblib.load(encoder_path)
-            print(f"[ML] Loaded dynamic label mapping: {self.label_decoder}")
+            logger.info(f"[ML] Loaded dynamic label mapping: {self.label_decoder}")
         else:
             # Safe fallback if label mapping file doesn't exist
             # (e.g., for old models trained without this feature)
@@ -68,9 +73,9 @@ class MLPredictor:
                 3: 'Communication',
                 4: 'Distracted'
             }
-            print(f"[ML] Using fallback label mapping (5-class): {self.label_decoder}")
+            logger.info(f"[ML] Using fallback label mapping (5-class): {self.label_decoder}")
             
-        print(f"[ML] Model loaded from {self.model_path}")
+        logger.info(f"[ML] Model loaded from {self.model_path}")
     
     def predict_with_confidence(self, block_metrics):
         """
@@ -100,7 +105,7 @@ class MLPredictor:
         
         # Validate features
         if not FeatureExtractor.validate_features(features):
-            print(f"⚠️  Invalid features detected: {features}")
+            logger.warning(f"Invalid features detected: {features}")
             return "Distracted", 0.50  # Fallback to uncertain Distracted
         
         # Reshape for single prediction
@@ -178,12 +183,12 @@ class MLPredictor:
 
 def main():
     """Test ML predictor with 8-signal sample data."""
-    print("\n" + "="*60)
-    print("TESTING ML PREDICTOR (5-CLASS, 8-SIGNAL)")
-    print("="*60)
+    logger.info("\n" + "="*60)
+    logger.info("TESTING ML PREDICTOR (5-CLASS, 8-SIGNAL)")
+    logger.info("="*60)
     
     # Initialize predictor
-    print("\n🔄 Loading ML model...")
+    logger.info("\n🔄 Loading ML model...")
     predictor = MLPredictor(model_path='data/models/context_detector.pkl')
     
     # Test samples with 8 psychological signals
@@ -265,7 +270,7 @@ def main():
         },
     ]
     
-    print("\n📊 Testing 5-class predictions:\n")
+    logger.info("\n📊 Testing 5-class predictions:\n")
     for test in test_samples:
         name = test['name']
         metrics = test['metrics']
@@ -273,18 +278,18 @@ def main():
         # Get prediction with full probabilities
         result = predictor.predict_with_probabilities(metrics)
         
-        print(f"✅ {name.upper()}")
-        print(f"   Predicted: {result['context_state']} (confidence: {result['confidence']:.2%})")
-        print(f"   Probabilities:")
+        logger.info(f"✅ {name.upper()}")
+        logger.info(f"   Predicted: {result['context_state']} (confidence: {result['confidence']:.2%})")
+        logger.info(f"   Probabilities:")
         for label, prob in sorted(result['probabilities'].items(), 
                                    key=lambda x: x[1], reverse=True):
             bar = '█' * int(prob * 20)
-            print(f"      {label:15s}: {prob:.2%} {bar}")
-        print()
+            logger.info(f"      {label:15s}: {prob:.2%} {bar}")
+        logger.info("")
     
-    print("="*60)
-    print("✅ ML PREDICTOR READY (Flow, Debugging, Research, Communication, Distracted)")
-    print("="*60)
+    logger.info("="*60)
+    logger.info("✅ ML PREDICTOR READY (Flow, Debugging, Research, Communication, Distracted)")
+    logger.info("="*60)
 
 
 if __name__ == '__main__':

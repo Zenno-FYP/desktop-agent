@@ -78,8 +78,9 @@ class FeatureExtractor:
                     app.lower() for app in ml_scoring.get('neutral_apps', [])
                 )
                 
-                # Load browser detection config
-                browser_cfg = config.get('browser_detection', {})
+                # Load browser detection config (nested under etl_pipeline in config.yaml)
+                etl_cfg = config.get('etl_pipeline', {})
+                browser_cfg = etl_cfg.get('browser_detection', {})
                 cls._browsers = set(app.lower() for app in browser_cfg.get('browsers', []))
                 cls._service_keywords = browser_cfg.get('service_keywords', {})
                 
@@ -301,6 +302,7 @@ class FeatureExtractor:
         # Matches block_evaluator.py and synthetic_data_generator.py time-weighting approach
         app_sessions = block_metrics.get('app_sessions', [])
         browser_context = block_metrics.get('browser_context') or block_metrics.get('active_file')
+        project_name = block_metrics.get('project_name')  # Sticky project for intent filtering
         
         if app_sessions:
             # Calculate TIME-WEIGHTED app score: (score1*duration1 + score2*duration2) / total_duration
@@ -340,6 +342,30 @@ class FeatureExtractor:
                 app_score = -1.0  # Was marked as distraction
             else:
                 app_score = 0.5  # Neutral default
+        
+        # === STICKY PROJECT UPGRADE LOGIC ===
+        # CRITICAL FIX: Apply the same project-based upgrade as ContextDetector heuristic
+        # This ensures ML model sees the same intent-filtered score as the fallback
+        # 
+        # Scenario: User watching YouTube tutorial while working on "Backend-API" project
+        # Without this: app_score = -1.0 (distraction) → ML predicts Distracted
+        # With this: app_score = 0.5 (neutral/research) → ML predicts Research
+        #
+        # Safety Check: Only upgrade if not gaming/high-intensity activity
+        mouse_velocity_px_per_sec = float(block_metrics.get('mouse_movement_distance', 0)) / max(total_duration_sec, 1)
+        mouse_cpm = float(block_metrics.get('mouse_click_rate', 0))
+        
+        if (project_name is not None and isinstance(project_name, str) and 
+            project_name.strip() and app_score < -0.5):
+            # Sticky project is present AND app is marked as distraction
+            # Check safety: Is this gaming? (High intensity = impossible for passive watching)
+            if mouse_velocity_px_per_sec > 250 or mouse_cpm > 60:
+                # Even with project, gaming is gaming. Keep as distraction.
+                pass
+            else:
+                # It's passive (watching tutorial while working on project). 
+                # Upgrade to neutral/research behavior
+                app_score = 0.5
         
         app_score = float(np.clip(app_score, -1.0, 1.0))
         
