@@ -123,19 +123,19 @@ class BehavioralMetrics:
                 elif key_name == 'alt':
                     self.active_modifiers.add(key_name)
                 else:
-                    # CRITICAL FIX: Don't count deletion keys as regular keystrokes
-                    # Deletion keys should ONLY increment deletion_key_count, not key_count
-                    # This prevents double-counting and ensures correction_ratio is accurate
+                    # Determine if this is a deletion key
                     is_deletion_key = (
                         key_name in {'delete', 'backspace'} or
                         (key_name == 'z' and ('ctrl' in self.active_modifiers or 'cmd' in self.active_modifiers)) or
                         (key_name == 'delete' and 'shift' in self.active_modifiers)  # Shift+Delete
                     )
                     
-                    # Only count as regular keystroke if NOT a deletion key
-                    if not is_deletion_key and key_name not in self.modifier_keys:
+                    # Count ALL keystrokes (including deletions) in key_count
+                    # Deletion keys are valid keystrokes that should contribute to typing_intensity
+                    if key_name not in self.modifier_keys:
                         self.key_count += 1
                     
+                    # ALSO track deletion keys separately for correction_ratio calculation
                     # Track deletion keys: delete, backspace, ctrl+z, cmd+z, and shift+delete
                     # (These indicate editorial activity - corrections, undos, etc.)
                     if key_name in {'delete', 'backspace'}:

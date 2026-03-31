@@ -401,9 +401,9 @@ class ActivityCollector:
             return {
                 "typing_intensity_kpm": row[0],
                 "mouse_click_rate_cpm": row[1],
-                "deletion_key_presses": row[2],
-                "idle_sec": row[3],
-                "mouse_movement_distance": row[4],
+                "total_deletion_key_presses": row[2],
+                "total_idle_sec": row[3],
+                "total_mouse_movement_distance": row[4],
             }
         except Exception as e:
             logger.error(f"Error querying behavior for {project_name}/{date}: {e}")
