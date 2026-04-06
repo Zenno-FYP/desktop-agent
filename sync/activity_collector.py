@@ -374,20 +374,20 @@ class ActivityCollector:
             return {}
 
     def _get_daily_behavior(self, project_name: str, date: str) -> dict:
-        """Get behavior metrics (keystrokes, clicks, scrolls, idle) for a day.
+        """Get behavior metrics (typing rate, click rate, deletions, idle, mouse distance) for a day.
         
         Args:
             project_name: Project identifier
             date: YYYY-MM-DD date string
             
         Returns:
-            Dict with keystrokes, clicks, scrolls, idle_sec keys
+            Dict with typing_intensity_kpm, mouse_click_rate_cpm, deletion_key_presses, idle_sec, mouse_movement_distance keys
         """
         try:
             cursor = self.db.conn.execute(
                 """
-                SELECT total_keystrokes, total_mouse_clicks, 
-                       total_scroll_events, total_idle_sec
+                SELECT typing_intensity_kpm, mouse_click_rate_cpm, 
+                       total_deletion_key_presses, total_idle_sec, total_mouse_movement_distance
                 FROM daily_project_behavior
                 WHERE project_name = ? AND date = ? AND needs_sync = 1
                 """,
@@ -399,10 +399,11 @@ class ActivityCollector:
                 return {}
             
             return {
-                "keystrokes": row[0],
-                "clicks": row[1],
-                "scrolls": row[2],
-                "idle_sec": row[3],
+                "typing_intensity_kpm": row[0],
+                "mouse_click_rate_cpm": row[1],
+                "total_deletion_key_presses": row[2],
+                "total_idle_sec": row[3],
+                "total_mouse_movement_distance": row[4],
             }
         except Exception as e:
             logger.error(f"Error querying behavior for {project_name}/{date}: {e}")

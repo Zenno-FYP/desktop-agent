@@ -6,10 +6,15 @@ and pass the "clean" batch to specialized aggregators for their specific tasks.
 
 Flow:
 1. EXTRACT: Query raw_activity_logs for unprocessed, tagged logs
+   - Retrieves: activity_type, timestamp, duration_sec, typing_intensity, mouse_click_rate,
+     deletion_key_presses, idle_duration_sec, mouse_movement_distance, app_name, raw_window_title,
+     manually_verified_label, manually_verified_project, context_tag, is_processed
 2. TRANSFORM: Run once:
     - Project attribution (trust raw logs; assign "__unassigned__" when missing)
     - Manual context override (use manually_verified_label when present)
     - Midnight splitting (split overnight boundaries in local time)
+    - Physical effort metrics pass-through: typing_intensity, mouse_click_rate, deletion_key_presses,
+      idle_duration_sec, mouse_movement_distance
 3. DELEGATE: Pass clean batch to each aggregator → get SQL commands
 4. LOAD: Execute all SQL commands in ONE atomic transaction
 """
@@ -102,13 +107,13 @@ class ETLPipeline:
         Returns:
             List of tuples: (log_id, start_time, end_time, app_name, project_name, project_path,
                            detected_language, context_state, manually_verified_label, duration_sec, typing_intensity,
-                           mouse_click_rate, mouse_scroll_events, idle_duration_sec, active_file)
+                           mouse_click_rate, deletion_key_presses, idle_duration_sec, active_file, mouse_movement_distance)
         """
         cursor = self.db.conn.execute(
             """
             SELECT log_id, start_time, end_time, app_name, project_name, project_path,
                    detected_language, context_state, manually_verified_label, duration_sec, typing_intensity,
-                   mouse_click_rate, mouse_scroll_events, idle_duration_sec, active_file
+                   mouse_click_rate, deletion_key_presses, idle_duration_sec, active_file, mouse_movement_distance
             FROM raw_activity_logs
             WHERE is_aggregated = 0
               AND context_state IS NOT NULL
@@ -155,9 +160,10 @@ class ETLPipeline:
             duration_sec,
             typing_intensity,
             mouse_click_rate,
-            mouse_scroll_events,
+            deletion_key_presses,
             idle_duration_sec,
             active_file,
+            mouse_movement_distance,
         ) in raw_logs:
             # Parse timestamps (already in local time)
             start_local = datetime.fromisoformat(start_time_iso)
@@ -209,8 +215,9 @@ class ETLPipeline:
                     "end_time_local": seg_end.strftime("%Y-%m-%d %H:%M:%S"),
                     "typing_intensity": typing_intensity,
                     "mouse_click_rate": mouse_click_rate,
-                    "mouse_scroll_events": mouse_scroll_events,
+                    "deletion_key_presses": deletion_key_presses,
                     "idle_duration_sec": idle_duration_sec,
+                    "mouse_movement_distance": mouse_movement_distance,
                 })
 
         return transformed

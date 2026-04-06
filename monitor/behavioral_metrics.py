@@ -1,9 +1,10 @@
-"""Track behavioral signals: typing intensity, clicks, scrolls."""
+"""Track behavioral signals: typing intensity, clicks, deletion key presses."""
 import logging
 import time
+import math
 from typing import Dict, Any
 from pynput import keyboard, mouse
-from threading import Lock
+from threading import Lock, Thread, Event
 
 
 class BehavioralMetrics:
@@ -19,15 +20,21 @@ class BehavioralMetrics:
         
         # Keyboard metrics
         self.key_count = 0
-        self.modifier_keys = {'shift', 'ctrl', 'alt', 'cmd'}
+        self.modifier_keys = {'ctrl', 'alt', 'cmd'}  # Shift is now tracked in active_modifiers
+        
+        # Track active modifiers for combination detection (Ctrl+Z, Cmd+Z, Shift+Delete)
+        self.active_modifiers = set()
         
         # Mouse metrics
         self.click_count = 0
         self.last_click_time = 0
         self.click_debounce_ms = click_debounce_ms  # From config
+        self.mouse_movement_distance = 0  # Total pixels moved (Euclidean distance)
+        self.last_mouse_x = None
+        self.last_mouse_y = None
         
-        # Scroll metrics
-        self.scroll_count = 0
+        # Deletion key metrics (Delete, Backspace, Ctrl+Z/Cmd+Z)
+        self.deletion_key_count = 0
         
         # Time tracking
         self.start_time = time.time()
@@ -36,36 +43,59 @@ class BehavioralMetrics:
         # Listeners (will be started/stopped as needed)
         self.keyboard_listener = None
         self.mouse_listener = None
+        
+        # Mouse movement sampling thread (100ms poll interval)
+        self.mouse_movement_thread = None
+        self.mouse_movement_stop_event = Event()
+        self.movement_sample_interval = 0.1  # 100ms = 10Hz sampling
 
         self.logger = logging.getLogger(__name__)
 
     def start_listening(self):
         """Start keyboard and mouse listeners."""
         try:
-            # Keyboard listener
-            self.keyboard_listener = keyboard.Listener(on_press=self._on_key_press)
+            # Keyboard listener with on_release to track modifier state
+            self.keyboard_listener = keyboard.Listener(on_press=self._on_key_press, on_release=self._on_key_release)
             self.keyboard_listener.start()
             
-            # Mouse listener
+            # Mouse listener (clicks only - NO on_move event for performance)
             self.mouse_listener = mouse.Listener(
-                on_click=self._on_mouse_click,
-                on_scroll=self._on_mouse_scroll
+                on_click=self._on_mouse_click
             )
             self.mouse_listener.start()
+            
+            # Start background thread for mouse movement sampling (100ms intervals)
+            self.mouse_movement_stop_event.clear()
+            self.mouse_movement_thread = Thread(
+                target=self._sample_mouse_movement,
+                daemon=True,
+                name="MouseMovementSampler"
+            )
+            self.mouse_movement_thread.start()
 
-            self.logger.info("[BehavioralMetrics] Listeners started")
+            self.logger.info("[BehavioralMetrics] Listeners started (keyboard, clicks) + MouseMovementSampler thread")
         except Exception as e:
             self.logger.exception("[BehavioralMetrics] Error starting listeners")
 
     def stop_listening(self):
         """Stop keyboard and mouse listeners."""
         try:
+            # Stop mouse movement sampling thread
+            if self.mouse_movement_thread:
+                self.mouse_movement_stop_event.set()
+                self.mouse_movement_thread.join(timeout=2)
+                self.mouse_movement_thread = None
+            
+            # Stop keyboard listener
             if self.keyboard_listener:
                 self.keyboard_listener.stop()
                 self.keyboard_listener = None
+            
+            # Stop click listener
             if self.mouse_listener:
                 self.mouse_listener.stop()
                 self.mouse_listener = None
+            
             self.logger.info("[BehavioralMetrics] Listeners stopped")
         except Exception as e:
             self.logger.exception("[BehavioralMetrics] Error stopping listeners")
@@ -87,11 +117,62 @@ class BehavioralMetrics:
             
             # Only hold lock for counter update - minimal time
             with self.lock:
-                if key_name not in self.modifier_keys:
-                    self.key_count += 1
+                # Track modifier state
+                if key_name in ['ctrl', 'cmd', 'shift']:
+                    self.active_modifiers.add(key_name)
+                elif key_name == 'alt':
+                    self.active_modifiers.add(key_name)
+                else:
+                    # Determine if this is a deletion key
+                    is_deletion_key = (
+                        key_name in {'delete', 'backspace'} or
+                        (key_name == 'z' and ('ctrl' in self.active_modifiers or 'cmd' in self.active_modifiers)) or
+                        (key_name == 'delete' and 'shift' in self.active_modifiers)  # Shift+Delete
+                    )
+                    
+                    # Count ALL keystrokes (including deletions) in key_count
+                    # Deletion keys are valid keystrokes that should contribute to typing_intensity
+                    if key_name not in self.modifier_keys:
+                        self.key_count += 1
+                    
+                    # ALSO track deletion keys separately for correction_ratio calculation
+                    # Track deletion keys: delete, backspace, ctrl+z, cmd+z, and shift+delete
+                    # (These indicate editorial activity - corrections, undos, etc.)
+                    if key_name in {'delete', 'backspace'}:
+                        self.deletion_key_count += 1
+                    # Detect Ctrl+Z or Cmd+Z (undo/redo)
+                    elif key_name == 'z' and ('ctrl' in self.active_modifiers or 'cmd' in self.active_modifiers):
+                        self.deletion_key_count += 1
+                    # Detect Shift+Delete (permanent delete / cut)
+                    elif key_name == 'delete' and 'shift' in self.active_modifiers:
+                        self.deletion_key_count += 1
+                
                 self.last_activity_time = time.time()
         except Exception as e:
             self.logger.exception("[BehavioralMetrics] Key press error")
+
+    def _on_key_release(self, key):
+        """Handle keyboard release event (track modifier releases)."""
+        try:
+            # Extract key name
+            key_name = None
+            try:
+                if hasattr(key, 'char') and key.char is not None:
+                    key_name = key.char.lower()
+                elif hasattr(key, 'name') and key.name is not None:
+                    key_name = key.name.lower()
+                else:
+                    key_name = str(key).replace("Key.", "").replace("KeyCode(", "").replace(")", "").lower()
+            except (AttributeError, TypeError):
+                key_name = str(key).replace("Key.", "").replace("KeyCode(", "").replace(")", "").lower()
+            
+            # Remove from active modifiers when released
+            with self.lock:
+                if key_name in ['ctrl', 'cmd', 'alt', 'shift']:
+                    self.active_modifiers.discard(key_name)
+                self.last_activity_time = time.time()
+        except Exception as e:
+            self.logger.exception("[BehavioralMetrics] Key release error")
 
     def _on_mouse_click(self, x, y, button, pressed):
         """Handle mouse click event."""
@@ -116,20 +197,57 @@ class BehavioralMetrics:
         except Exception as e:
             self.logger.exception("[BehavioralMetrics] Click error")
 
-    def _on_mouse_scroll(self, x, y, button, delta):
-        """Handle mouse scroll event."""
+    def _sample_mouse_movement(self):
+        """Background thread: Sample mouse position every 100ms and calculate distance.
+        
+        Uses polling (not event-based) for CPU efficiency.
+        Calculates Euclidean distance between samples.
+        Runs at 10Hz (100ms intervals).
+        """
         try:
-            with self.lock:
-                self.scroll_count += 1
-                self.last_activity_time = time.time()
+            mouse_controller = mouse.Controller()
+            
+            while not self.mouse_movement_stop_event.is_set():
+                try:
+                    # Get current mouse position
+                    current_x, current_y = mouse_controller.position
+                    
+                    with self.lock:
+                        # If we have a previous position, calculate Euclidean distance
+                        if self.last_mouse_x is not None and self.last_mouse_y is not None:
+                            dx = current_x - self.last_mouse_x
+                            dy = current_y - self.last_mouse_y
+                            
+                            # Euclidean distance: sqrt(dx^2 + dy^2)
+                            distance = math.sqrt(dx**2 + dy**2)
+                            
+                            # Only count significant movements (>1 pixel) to avoid noise
+                            if distance > 1.0:
+                                self.mouse_movement_distance += distance
+                        
+                        # Update last position
+                        self.last_mouse_x = current_x
+                        self.last_mouse_y = current_y
+                    
+                    # Sleep 100ms before next sample (10Hz = 10 samples/sec)
+                    self.mouse_movement_stop_event.wait(self.movement_sample_interval)
+                    
+                except Exception as e:
+                    self.logger.warning(f"[MouseMovementSampler] Error during sampling: {e}")
+                    # Continue sampling even on error
+                    self.mouse_movement_stop_event.wait(self.movement_sample_interval)
+        
         except Exception as e:
-            self.logger.exception("[BehavioralMetrics] Scroll error")
+            self.logger.exception("[MouseMovementSampler] Fatal error in sampling thread")
+
+
 
     def get_metrics(self) -> Dict[str, Any]:
         """Get current metrics and calculate rates.
         
         Returns:
-            dict with typing_intensity (KPM), click_rate (CPM), scroll_count
+            dict with typing_intensity (KPM), click_rate (CPM), deletion_key_presses (count),
+            and mouse_movement_distance (total pixels moved)
         """
         with self.lock:
             current_time = time.time()
@@ -142,9 +260,10 @@ class BehavioralMetrics:
             return {
                 'typing_intensity': round(typing_intensity, 2),
                 'mouse_click_rate': round(mouse_click_rate, 2),
-                'mouse_scroll_events': self.scroll_count,
+                'deletion_key_presses': self.deletion_key_count,
                 'key_count': self.key_count,
                 'click_count': self.click_count,
+                'mouse_movement_distance': round(self.mouse_movement_distance, 2),  # Total pixels moved
                 'elapsed_sec': elapsed_sec,
             }
 
@@ -153,8 +272,12 @@ class BehavioralMetrics:
         with self.lock:
             self.key_count = 0
             self.click_count = 0
-            self.scroll_count = 0
+            self.deletion_key_count = 0
+            self.mouse_movement_distance = 0
             self.last_click_time = 0
+            self.last_mouse_x = None
+            self.last_mouse_y = None
+            self.active_modifiers.clear()
             self.start_time = time.time()
             self.last_activity_time = time.time()
 

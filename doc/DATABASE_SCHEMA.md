@@ -33,9 +33,9 @@ Stores detailed activity records captured in real-time from the desktop agent.
 | `project_path` | TEXT |  | File system path to the project root |
 | `active_file` | TEXT |  | Currently active file path (relative to project root or absolute) |
 | `detected_language` | TEXT |  | Programming language detected (e.g., `python`, `javascript`, `typescript`) |
-| `typing_intensity` | REAL | 0.0 | Keystroke intensity metric (0.0–1.0 range estimate) |
-| `mouse_click_rate` | REAL | 0.0 | Mouse click rate (clicks per minute or normalized value) |
-| `mouse_scroll_events` | INTEGER | 0 | Total scroll wheel events in this period |
+| `typing_intensity` | REAL | 0.0 | Keystroke rate in KPM (keystrokes per minute) |
+| `mouse_click_rate` | REAL | 0.0 | Mouse click rate in CPM (clicks per minute) |
+| `deletion_key_presses` | INTEGER | 0 | Total deletion key presses (Delete, Backspace, Ctrl+Z combined) |
 | `idle_duration_sec` | INTEGER | 0 | Time spent idle (no keyboard/mouse input) |
 | `context_state` | TEXT |  | Work context state (e.g., `coding`, `meeting`, `break`, `research`) |
 | `confidence_score` | REAL |  | AI confidence score (0.0–1.0) for the detected context/project |

@@ -21,7 +21,7 @@ class Config:
         self._data = {}
 
         if config_file.exists():
-            with open(config_file, "r") as f:
+            with open(config_file, "r", encoding="utf-8") as f:
                 self._data = yaml.safe_load(f) or {}
         else:
             raise FileNotFoundError(f"Config file not found: {config_file}")

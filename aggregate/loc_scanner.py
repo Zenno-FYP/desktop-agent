@@ -135,6 +135,9 @@ class LOCScanner:
     def _scan_directory(self, project_path):
         """Recursively scan a directory and count LOC + files by language.
         
+        Implements MAX DEPTH check to prevent scanning deeply nested projects
+        (which can freeze the agent). Default limit: 10 levels deep.
+        
         Args:
             project_path: Path to project root directory
             
@@ -155,9 +158,18 @@ class LOCScanner:
             return dict(loc_by_language), dict(file_count_by_language)
 
         try:
+            # MAX DEPTH CHECK: Default limit 10 levels to prevent runaway scanning
+            max_depth = 10  # Can be configured in config if needed
+            base_depth = len(project_path_obj.parts)
+            
             for file_path in project_path_obj.rglob("*"):
                 # Skip hidden files and directories
                 if any(part.startswith(".") for part in file_path.parts):
+                    continue
+                
+                # DEPTH CHECK: Skip if deeper than max_depth
+                current_depth = len(file_path.parts) - base_depth
+                if current_depth > max_depth:
                     continue
 
                 # Skip if parent is in skip list
