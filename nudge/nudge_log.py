@@ -3,7 +3,7 @@ import json
 import logging
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from nudge.nudge_context import NudgeContext
@@ -14,9 +14,12 @@ logger = logging.getLogger(__name__)
 class NudgeLog:
     """Thin wrapper around the nudge_log SQLite table."""
 
+    _RETENTION_DAYS = 30  # Keep at most this many days of nudge history
+
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._lock = threading.Lock()
+        self._prune_old_entries(self._RETENTION_DAYS)
 
     # ── Write ──────────────────────────────────────────────────────────────
 
@@ -126,6 +129,14 @@ class NudgeLog:
             return 0
 
     # ── Internals ──────────────────────────────────────────────────────────
+
+    def _prune_old_entries(self, days: int) -> None:
+        """Delete nudge_log rows older than `days` days (Design 8: retention policy)."""
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        self._execute(
+            "DELETE FROM nudge_log WHERE generated_at < ?",
+            (cutoff,),
+        )
 
     def _conn(self):
         conn = sqlite3.connect(self.db_path)

@@ -1010,7 +1010,11 @@ nudge:
   distraction_threshold: 0.30
 
   # Minimum active minutes today before any nudge is shown
-  min_active_min: 10.0
+  # Raised to 15 min (was 10) — removes the now-redundant Priority 1 MOTIVATION path
+  min_active_min: 15.0
+
+  # Communication state ratio (last window) above which nudges are suppressed (in-meeting guard)
+  meeting_suppression_threshold: 0.80
 
   llm:
     enabled: true                     # Set false to always use fallback templates

@@ -3,6 +3,7 @@ Zenno Desktop Agent - Entry Point (Phase 1: Core Activity Detection)
 """
 import time
 import logging
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
@@ -19,6 +20,7 @@ from aggregate.loc_scanner import LOCScanner
 from aggregate.etl_pipeline import ETLPipeline
 from sync.activity_syncer import ActivitySyncer
 from nudge.nudge_scheduler import NudgeScheduler
+from nudge.user_preferences import UserPreferences
 
 
 class ActivitySession:
@@ -80,6 +82,17 @@ class ActivitySession:
             duration_sec = 1
             # Adjust end_time to be 1 second after start_time
             end_dt = start_dt + timedelta(seconds=1)
+            end_time = end_dt.isoformat()
+        # Cap duration to 1 hour to prevent hibernation/sleep anomalies from
+        # inflating a single session with 8+ hours of phantom work time.
+        elif duration_sec > 3600:
+            self.logger.warning(
+                "[Session] Duration anomaly detected (%ds > 3600s cap). "
+                "Likely caused by system sleep/hibernate. Capping to 3600s.",
+                duration_sec,
+            )
+            duration_sec = 3600
+            end_dt = start_dt + timedelta(seconds=3600)
             end_time = end_dt.isoformat()
         
         # Get behavioral metrics
@@ -153,12 +166,15 @@ class ActivitySession:
 class DesktopAgent:
     """Main agent for activity detection and logging."""
 
-    def __init__(self, config_path: str = None):
+    def __init__(self, config_path: str = None, user_preferences: UserPreferences | None = None):
         """Initialize the desktop agent.
         
         Args:
-            config_path: Optional path to config file
+            config_path:       Optional path to config file.
+            user_preferences:  Onboarding preferences loaded before agent start.
+                               If None, the NudgeScheduler will use config defaults.
         """
+        self._user_preferences = user_preferences
         self.config = Config(config_path) if config_path else Config()
         self._setup_logging()
         self.sample_interval = self.config.get("sample_interval_sec", 2)
@@ -222,16 +238,19 @@ class DesktopAgent:
                 interval_min=int(nudge_cfg.get("interval_min", 30)),
                 suppression_min=int(nudge_cfg.get("suppression_min", 25)),
                 window_min=int(nudge_cfg.get("window_min", 30)),
-                min_active_min=float(nudge_cfg.get("min_active_min", 10.0)),
+                min_active_min=float(nudge_cfg.get("min_active_min", 15.0)),
                 idle_break_threshold_min=int(nudge_cfg.get("idle_break_threshold_min", 5)),
                 late_night_hour=int(nudge_cfg.get("late_night_hour", 21)),
                 flow_streak_min=float(nudge_cfg.get("flow_streak_min", 45.0)),
                 break_reminder_min=float(nudge_cfg.get("break_reminder_min", 90.0)),
                 distraction_threshold=float(nudge_cfg.get("distraction_threshold", 0.30)),
+                meeting_suppression_threshold=float(nudge_cfg.get("meeting_suppression_threshold", 0.80)),
                 llm_enabled=bool(llm_cfg.get("enabled", True)),
                 llm_timeout_sec=float(llm_cfg.get("timeout_sec", 4.0)),
                 notification_enabled=bool(notif_cfg.get("enabled", True)),
                 notification_display_sec=int(notif_cfg.get("display_sec", 7)),
+                # User preferences override config defaults where applicable
+                user_preferences=self._user_preferences,
             )
             self.logger.info("[Agent] NudgeScheduler initialized")
         
@@ -247,6 +266,9 @@ class DesktopAgent:
         
         # Recover sticky project from last session (survive agent restart)
         self._recover_sticky_project()
+
+        # Event used for interruptible sleep and clean shutdown signalling
+        self._stop_event = threading.Event()
         
         self.last_flush_time = time.time()
 
@@ -283,6 +305,7 @@ class DesktopAgent:
         
         try:
             while True:
+              try:
                 # Get active window
                 app_name, window_title, pid = get_active_window()
                 
@@ -342,13 +365,18 @@ class DesktopAgent:
                                 config=self.config,
                             )
                 
-                # Check idle and trigger LOC scanning
-                self._check_idle_and_scan_loc()
+                # Check idle and trigger LOC scanning (non-blocking — fires background thread)
+                self._check_idle_and_scan_loc_async()
                 
-                # Run ETL pipeline and sync (every 15 minutes)
-                self._run_etl_and_sync()
-                
-                time.sleep(self.sample_interval)
+                # Run ETL pipeline and sync (non-blocking — fires background thread)
+                self._run_etl_and_sync_async()
+
+              except Exception:
+                self.logger.exception("[Agent] Unexpected error in main loop iteration; continuing")
+
+              # Interruptible sleep outside the inner try so it always runs,
+              # and so KeyboardInterrupt is never swallowed by the inner handler.
+              self._stop_event.wait(self.sample_interval)
         
         except KeyboardInterrupt:
             self.logger.info("[Agent] Shutdown signal received...")
@@ -498,49 +526,45 @@ class DesktopAgent:
         except Exception as e:
             self.logger.exception("[Error] Failed to flush session")
 
-    def _check_idle_and_scan_loc(self):
-        """Trigger LOC scanning periodically (every hour).
-        
-        Scans all projects that have been active since their last scan.
-        Runs on a timer basis, not dependent on user idle status.
+    def _check_idle_and_scan_loc_async(self):
+        """Fire a background thread for LOC scanning if the interval has elapsed.
+
+        The timestamp is updated before the thread starts to prevent double-firing
+        if the previous scan is still running when the next tick arrives.
         """
         current_time = time.time()
-        
-        # Check if enough time has passed since last scan
         if current_time - self.last_loc_scan_time < self.loc_scan_interval_sec:
-            return  # Not yet, skip
-        
+            return
+        self.last_loc_scan_time = current_time
+        threading.Thread(target=self._loc_scan_worker, daemon=True, name="LOCScan").start()
+
+    def _loc_scan_worker(self):
+        """Worker: scan LOC for all active projects (runs in its own thread)."""
         try:
             self.logger.info("[LOCScanner] Starting background LOC scan...")
             self.loc_scanner.scan_all_projects()
-            self.last_loc_scan_time = current_time
             self.logger.info("[LOCScanner] Completed LOC scan")
-        except Exception as e:
+        except Exception:
             self.logger.exception("[Error] LOC scanning failed")
 
-    def _run_etl_and_sync(self):
-        """Run ETL pipeline and activity sync periodically (every 15 minutes).
-        
-        Flow:
-        1. Run ETL: aggregate raw logs into daily project tables
-        2. Run Sync: send pending aggregates to backend via activity sync API
-        
-        Both are optional; failures don't block agent operation.
+    def _run_etl_and_sync_async(self):
+        """Fire a background thread for ETL + sync if the interval has elapsed.
+
+        The timestamp is updated before the thread starts to prevent double-firing.
         """
         current_time = time.time()
-        
-        # Check if enough time has passed since last ETL
         if current_time - self.last_etl_time < self.etl_interval_sec:
-            return  # Not yet, skip
-        
+            return
+        self.last_etl_time = current_time
+        threading.Thread(target=self._etl_and_sync_worker, daemon=True, name="ETLSync").start()
+
+    def _etl_and_sync_worker(self):
+        """Worker: run ETL aggregation then sync pending data (runs in its own thread)."""
         try:
-            # ===== ETL PHASE =====
             self.logger.info("[ETL] Starting ETL pipeline...")
             self.etl_pipeline.run()
             self.logger.info("[ETL] Completed ETL aggregation")
-            
-            # ===== SYNC PHASE =====
-            # After ETL completes, check if there's pending data to sync
+
             if self.db.has_pending_sync():
                 self.logger.info("[Sync] Pending data detected; starting activity sync...")
                 success = self.activity_syncer.sync_activity()
@@ -550,15 +574,14 @@ class DesktopAgent:
                     self.logger.warning("[Sync] Activity sync failed; will retry next cycle")
             else:
                 self.logger.debug("[Sync] No pending data to sync")
-            
-            self.last_etl_time = current_time
-            
-        except Exception as e:
+        except Exception:
             self.logger.exception("[Error] ETL/Sync cycle failed")
 
     def _shutdown(self):
         """Graceful shutdown."""
         self.logger.info("[Agent] Shutting down...")
+        # Wake the main loop immediately so it exits without waiting for sleep to expire
+        self._stop_event.set()
         
         # Stop background block evaluator
         self.block_evaluator.stop()

@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zenno — Quick Setup</title>
+  <style>
+    /* ── Reset & Variables ───────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f0f13;
+      --surface:   #1a1a24;
+      --surface2:  #21212e;
+      --border:    #2a2a3a;
+      --text:      #e8e8f0;
+      --muted:     #8888a0;
+      --accent:    #6c5ce7;
+      --accent-h:  #7c6df7;
+      --accent-lo: rgba(108, 92, 231, 0.15);
+      --radius:    12px;
+      --transition: 0.2s ease;
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    /* ── Card ────────────────────────────────────────────────────── */
+    .card {
+      width: 460px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 36px 36px 28px;
+      box-shadow: 0 8px 40px rgba(0,0,0,.5);
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* ── Header ──────────────────────────────────────────────────── */
+    .header { margin-bottom: 28px; }
+    .brand-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .brand-name {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      background: linear-gradient(135deg, var(--accent), #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .setup-label {
+      font-size: 11px;
+      color: var(--muted);
+      background: rgba(108,92,231,.12);
+      border: 1px solid rgba(108,92,231,.25);
+      border-radius: 20px;
+      padding: 2px 9px;
+      letter-spacing: .3px;
+    }
+    .header h2 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      color: var(--text);
+    }
+    .header p {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    /* ── Progress Dots ───────────────────────────────────────────── */
+    .progress {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 28px;
+    }
+    .dot {
+      height: 4px;
+      border-radius: 2px;
+      flex: 1;
+      background: var(--border);
+      transition: background 0.3s ease;
+    }
+    .dot.active  { background: var(--accent); }
+    .dot.done    { background: rgba(108,92,231,.5); }
+
+    /* ── Step Container ──────────────────────────────────────────── */
+    .steps-wrapper {
+      position: relative;
+      overflow: hidden;
+      min-height: 280px;
+    }
+
+    .step {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(30px);
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+    .step.active {
+      position: relative;
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(0);
+    }
+    .step.leaving {
+      position: absolute;
+      opacity: 0;
+      transform: translateX(-30px);
+    }
+
+    /* ── Question Label ──────────────────────────────────────────── */
+    .q-number {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 6px;
+    }
+    .q-text {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 16px;
+      line-height: 1.3;
+    }
+
+    /* ── Option Cards ────────────────────────────────────────────── */
+    .options { display: flex; flex-direction: column; gap: 8px; }
+
+    .option {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      cursor: pointer;
+      background: var(--bg);
+      transition: border-color var(--transition), background var(--transition);
+    }
+    .option:hover { border-color: rgba(108,92,231,.5); background: var(--surface2); }
+    .option.selected {
+      border-color: var(--accent);
+      background: var(--accent-lo);
+    }
+
+    .radio {
+      width: 18px;
+      height: 18px;
+      border: 2px solid var(--border);
+      border-radius: 50%;
+      flex-shrink: 0;
+      margin-top: 1px;
+      transition: border-color var(--transition), background var(--transition);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .option.selected .radio {
+      border-color: var(--accent);
+      background: var(--accent);
+    }
+    .radio-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #fff;
+      opacity: 0;
+      transition: opacity var(--transition);
+    }
+    .option.selected .radio-dot { opacity: 1; }
+
+    .option-text { flex: 1; }
+    .option-label {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 2px;
+    }
+    .option-sub {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    /* ── Step 4 toggle (2 options side-by-side) ─────────────────── */
+    .options.two-col {
+      flex-direction: row;
+      gap: 10px;
+    }
+    .options.two-col .option { flex: 1; }
+
+    /* ── Footer ──────────────────────────────────────────────────── */
+    .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 24px;
+    }
+    .btn-skip {
+      font-size: 13px;
+      color: var(--muted);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      padding: 4px 0;
+      transition: color var(--transition);
+    }
+    .btn-skip:hover { color: var(--text); }
+
+    .btn-next {
+      padding: 11px 28px;
+      font-size: 14px;
+      font-weight: 700;
+      color: #fff;
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background var(--transition), transform var(--transition),
+                  box-shadow var(--transition);
+      box-shadow: 0 2px 12px rgba(108,92,231,.3);
+    }
+    .btn-next:hover { background: var(--accent-h); box-shadow: 0 4px 18px rgba(108,92,231,.45); }
+    .btn-next:active { transform: scale(.97); }
+    .btn-next:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+  </style>
+</head>
+<body>
+<div class="card">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="brand-row">
+      <span class="brand-name">ZENNO</span>
+      <span class="setup-label">Quick setup</span>
+    </div>
+    <h2>Personalise your experience</h2>
+    <p>4 questions — about 60 seconds</p>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress">
+    <div class="dot active" id="d1"></div>
+    <div class="dot" id="d2"></div>
+    <div class="dot" id="d3"></div>
+    <div class="dot" id="d4"></div>
+  </div>
+
+  <!-- Steps -->
+  <div class="steps-wrapper">
+
+    <!-- Step 1: Work Schedule -->
+    <div class="step active" id="step-1">
+      <div class="q-number">Question 1 of 4</div>
+      <div class="q-text">When do you usually work?</div>
+      <div class="options" id="opts-schedule">
+        <div class="option" data-val="morning" onclick="select(this,'schedule')">
+          <div class="radio"><div class="radio-dot"></div></div>
+          <div class="option-text">
+            <div class="option-label">Morning</div>
+            <div class="option-sub">7 am – 3 pm</div>
+          </div>
+        </div>
+        <div class="option selected" data-val="standard" onclick="select(this,'schedule')">
+          <div class="radio"><div class="radio-dot"></div></div>
+          <div class="option-text">
+            <div class="option-label">Standard</div>
+            <div class="option-sub">9 am – 6 pm</div>
+          </div>
+        </div>
+        <div class="option" data-val="evening" onclick="select(this,'schedule')">
+          <div class="radio"><div class="radio-dot"></div></div>
+          <div class="option-text">
+            <div class="option-label">Evening</div>
+            <div class="option-sub">12 pm – 9 pm</div>
+          </div>
+        </div>
+        <div class="option" data-val="night_owl" onclick="select(this,'schedule')">
+          <div class="radio"><div class="radio-dot"></div></div>
+          <div class="option-text">
+            <div class="option-label">Night owl</div>
+            <div class="option-sub">3 pm – midnight</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2: Focus Style -->
+    <div class="step" id="step-2">
+      <div class="q-number">Question 2 of 4</div>
+      <div class="q-text">How do you prefer to work?</div>
+      <div class="options" id="opts-focus">
+        <div class="option" data-val="deep" onclick="select(this,'focus')">
+          <div class="radio"><div class="radio-dot"></div></div>
+          <div class="option-text">
+            <div class="option-label">Long deep sessions</div>
+            <div class="option-sub">90+ min uninterrupted</div>
+          </div>
+        </div>
+        <div class="option selected" data-val="moderate" onclick="select(this,'focus')">
+          <div class="radio"><div class="radio-dot"></div></div>
+          <div class="option-text">
+            <div class="option-label">Moderate blocks</div>
+            <div class="option-sub">45 – 60 min at a time</div>
+          </div>
+        </div>
+        <div class="option" data-val="pomodoro" onclick="select(this,'focus')">
+          <div class="radio"><div class="radio-dot"></div></div>
+          <div class="option-text">
+            <div class="option-label">Short sprints</div>
+            <div class="option-sub">25 – 30 min, Pomodoro-style</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3: Wellbeing Goal -->
+    <div class="step" id="step-3">
+      <div class="q-number">Question 3 of 4</div>
+      <div class="q-text">What matters most to you right now?</div>
+      <div class="options" id="opts-goal">
+        <div class="option selected" data-val="focused" onclick="select(this,'goal')">
+          <div class="radio"><div class="radio-dot"></div></div>
+          <div class="option-text">
+            <div class="option-label">Stay focused and productive</div>
+            <div class="option-sub">Celebrate flow, call out distraction</div>
+          </div>
+        </div>
+        <div class="option" data-val="burnout" onclick="select(this,'goal')">
+          <div class="radio"><div class="radio-dot"></div></div>
+          <div class="option-text">
+            <div class="option-label">Avoid burnout and overworking</div>
+            <div class="option-sub">Prioritise rest and fatigue signals</div>
+          </div>
+        </div>
+        <div class="option" data-val="habits" onclick="select(this,'goal')">
+          <div class="radio"><div class="radio-dot"></div></div>
+          <div class="option-text">
+            <div class="option-label">Build better work habits</div>
+            <div class="option-sub">Balanced nudges, day-level patterns</div>
+          </div>
+        </div>
+        <div class="option" data-val="minimal" onclick="select(this,'goal')">
+          <div class="radio"><div class="radio-dot"></div></div>
+          <div class="option-text">
+            <div class="option-label">Just track — don't nudge much</div>
+            <div class="option-sub">Only critical reminders, less noise</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 4: Meetings -->
+    <div class="step" id="step-4">
+      <div class="q-number">Question 4 of 4</div>
+      <div class="q-text">Do you have regular meetings or standups during the day?</div>
+      <div class="options two-col" id="opts-meetings">
+        <div class="option" data-val="1" onclick="select(this,'meetings')">
+          <div class="radio"><div class="radio-dot"></div></div>
+          <div class="option-text">
+            <div class="option-label">Yes, several</div>
+            <div class="option-sub">Standups, reviews, etc.</div>
+          </div>
+        </div>
+        <div class="option selected" data-val="0" onclick="select(this,'meetings')">
+          <div class="radio"><div class="radio-dot"></div></div>
+          <div class="option-text">
+            <div class="option-label">Mostly async</div>
+            <div class="option-sub">Solo / remote work</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Summary preview (shown on step 4) -->
+      <div id="summary" style="
+        margin-top: 18px;
+        padding: 12px 14px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.7;
+      ">
+        <span id="sum-text"></span>
+      </div>
+    </div>
+
+  </div><!-- /steps-wrapper -->
+
+  <!-- Footer -->
+  <div class="footer">
+    <button class="btn-skip" onclick="skipOnboarding()">Skip — use defaults</button>
+    <button class="btn-next" id="btn-next" onclick="nextStep()">Next →</button>
+  </div>
+
+</div><!-- /card -->
+
+<script>
+  const state = {
+    step: 1,
+    schedule: 'standard',
+    focus:    'moderate',
+    goal:     'focused',
+    meetings: 0,
+  };
+
+  const totalSteps = 4;
+
+  function select(el, group) {
+    const container = el.parentElement;
+    container.querySelectorAll('.option').forEach(o => o.classList.remove('selected'));
+    el.classList.add('selected');
+    const val = el.dataset.val;
+    if      (group === 'schedule') state.schedule = val;
+    else if (group === 'focus')    state.focus    = val;
+    else if (group === 'goal')     state.goal     = val;
+    else if (group === 'meetings') state.meetings = parseInt(val, 10);
+    if (state.step === 4) updateSummary();
+  }
+
+  function updateDots() {
+    for (let i = 1; i <= totalSteps; i++) {
+      const dot = document.getElementById('d' + i);
+      dot.className = 'dot' +
+        (i === state.step ? ' active' : i < state.step ? ' done' : '');
+    }
+  }
+
+  function showStep(newStep) {
+    const current = document.getElementById('step-' + state.step);
+    current.classList.add('leaving');
+    setTimeout(() => {
+      current.classList.remove('active', 'leaving');
+    }, 250);
+
+    state.step = newStep;
+    updateDots();
+
+    const next = document.getElementById('step-' + state.step);
+    // Force a reflow so the CSS transition fires properly
+    next.style.transform = 'translateX(30px)';
+    next.style.opacity = '0';
+    next.classList.add('active');
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        next.style.transform = '';
+        next.style.opacity = '';
+      });
+    });
+
+    const btn = document.getElementById('btn-next');
+    if (state.step === totalSteps) {
+      btn.textContent = 'Get started →';
+      updateSummary();
+    } else {
+      btn.textContent = 'Next →';
+    }
+  }
+
+  function nextStep() {
+    if (state.step < totalSteps) {
+      showStep(state.step + 1);
+    } else {
+      submit();
+    }
+  }
+
+  function submit() {
+    const btn = document.getElementById('btn-next');
+    btn.disabled = true;
+    btn.textContent = 'Setting up…';
+    window.pywebview.api.submit(
+      state.schedule,
+      state.focus,
+      state.goal,
+      state.meetings
+    );
+  }
+
+  function skipOnboarding() {
+    window.pywebview.api.skip();
+  }
+
+  const SCHEDULE_LABELS = {
+    morning:   'Morning (7am–3pm)',
+    standard:  'Standard (9am–6pm)',
+    evening:   'Evening (12pm–9pm)',
+    night_owl: 'Night owl (3pm–midnight)',
+  };
+  const FOCUS_LABELS = {
+    deep:     'Deep sessions (90+ min)',
+    moderate: 'Moderate blocks (45–60 min)',
+    pomodoro: 'Short sprints (Pomodoro)',
+  };
+  const GOAL_LABELS = {
+    focused:  'Stay focused & productive',
+    burnout:  'Avoid burnout',
+    habits:   'Build better habits',
+    minimal:  'Just track',
+  };
+
+  function updateSummary() {
+    const lines = [
+      '🕐 ' + (SCHEDULE_LABELS[state.schedule] || state.schedule),
+      '⚡ ' + (FOCUS_LABELS[state.focus]    || state.focus),
+      '🎯 ' + (GOAL_LABELS[state.goal]      || state.goal),
+      '📅 ' + (state.meetings ? 'Regular meetings' : 'Mostly async'),
+    ];
+    document.getElementById('sum-text').innerHTML = lines.join('<br>');
+  }
+
+  updateDots();
+</script>
+</body>
+</html>

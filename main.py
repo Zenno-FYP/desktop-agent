@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config.config import Config
 from database.db import Database
 from auth.webview_app import run_auth_window
+from nudge.user_preferences import UserPreferences, load_from_db, run_onboarding
 
 
 def main():
@@ -61,13 +62,27 @@ def main():
 
     logger.info("[Main] Authenticated as: %s (%s)", user_data.get("name"), user_data.get("email"))
 
+    # ── 4) Onboarding (first-run only) ──────────────────────
+    if not db.has_onboarding_completed():
+        logger.info("[Main] First run — showing personalisation wizard…")
+        # run_onboarding opens the pywebview wizard, blocks, and saves to DB.
+        prefs = run_onboarding(db_path)
+        logger.info(
+            "[Main] Onboarding complete: schedule=%s focus=%s goal=%s meetings=%s",
+            prefs.work_schedule, prefs.focus_style,
+            prefs.wellbeing_goal, prefs.has_meetings,
+        )
+    else:
+        prefs = load_from_db(db_path)
+        logger.info("[Main] Loaded existing preferences: schedule=%s", prefs.work_schedule)
+
     # Close the lightweight DB connection; DesktopAgent will open its own.
     db.close()
 
-    # ── 4) Start the agent ───────────────────────────────────
+    # ── 5) Start the agent ───────────────────────────────────
     logger.info("[Main] Launching desktop agent…")
     from agent import DesktopAgent
-    agent = DesktopAgent()
+    agent = DesktopAgent(user_preferences=prefs)
     agent.start()
 
 

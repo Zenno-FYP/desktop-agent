@@ -53,10 +53,12 @@ class NudgeContextAggregator:
         now = datetime.now()
         today_str = now.strftime("%Y-%m-%d")
         window_start = now - timedelta(minutes=self.window_minutes)
-        window_start_str = window_start.isoformat()
+        # The window before the last one (used for trend comparison — Bug 1 fix)
+        prev_window_start = now - timedelta(minutes=self.window_minutes * 2)
 
         today_logs = self._query_today_logs(conn, today_str)
-        window_logs = self._query_window_logs(conn, window_start_str)
+        window_logs = self._query_logs_between(conn, window_start, now)
+        prev_window_logs = self._query_logs_between(conn, prev_window_start, window_start)
 
         # Session timing
         session_start = today_logs[0]["start_time"] if today_logs else None
@@ -77,15 +79,17 @@ class NudgeContextAggregator:
         context_today = self._compute_context_distribution(today_logs)
         context_last_window = self._compute_context_distribution(window_logs)
 
-        # KPM / typing intensity trend
+        # KPM / typing intensity trend — last window vs prev window (Bug 1 fix)
         avg_kpm_today = self._weighted_avg(today_logs, "typing_intensity", "duration_sec")
         avg_kpm_window = self._weighted_avg(window_logs, "typing_intensity", "duration_sec")
-        kpm_trend = self._trend(avg_kpm_today, avg_kpm_window)
+        avg_kpm_prev_window = self._weighted_avg(prev_window_logs, "typing_intensity", "duration_sec")
+        kpm_trend = self._trend(avg_kpm_prev_window, avg_kpm_window)
 
-        # Correction (deletion) ratio
+        # Correction (deletion) ratio trend — same window-over-window approach (Bug 1 fix)
         corr_today = self._correction_ratio(today_logs)
         corr_window = self._correction_ratio(window_logs)
-        corr_trend = self._trend_inverse(corr_today, corr_window)
+        corr_prev_window = self._correction_ratio(prev_window_logs)
+        corr_trend = self._trend_inverse(corr_prev_window, corr_window)
 
         # Flow streak
         consecutive_flow_min, peak_flow_min = self._compute_flow_streaks(today_logs)
@@ -98,10 +102,11 @@ class NudgeContextAggregator:
         # Project context (from aggregated tables)
         top_project, top_language, n_projects = self._project_summary(conn, today_str)
 
-        # Fatigue composite score
+        # Fatigue composite score (Design 6: longest_break fed in as a mitigating factor)
         fatigue_score, fatigue_level = self._compute_fatigue(
             total_active_sec_today,
             min_since_break,
+            longest_break,
             corr_trend,
             kpm_trend,
             distraction_ratio_window,
@@ -169,15 +174,16 @@ class NudgeContextAggregator:
         )
         return cur.fetchall()
 
-    def _query_window_logs(self, conn, window_start_str: str) -> list:
+    def _query_logs_between(self, conn, start: datetime, end: datetime) -> list:
+        """Return context-tagged logs whose start_time falls in [start, end)."""
         cur = conn.execute(
             """
             SELECT * FROM raw_activity_logs
-            WHERE start_time >= ?
+            WHERE start_time >= ? AND start_time < ?
               AND context_state IS NOT NULL
             ORDER BY start_time ASC
             """,
-            (window_start_str,),
+            (start.isoformat(), end.isoformat()),
         )
         return cur.fetchall()
 
@@ -230,59 +236,60 @@ class NudgeContextAggregator:
     # ── Break Detection ────────────────────────────────────────────────────
 
     def _compute_break_metrics(self, logs) -> tuple:
-        """Return (min_since_last_break, has_taken_break, longest_break_min)."""
+        """Return (min_since_last_break, has_taken_break, longest_break_min).
+
+        Collects breaks from two sources then deduplicates overlapping detections
+        (Bug 2 fix: Method A idle-column and Method B inter-session gap can detect
+        the same physical break; any two break events within 2 min of each other
+        are treated as the same event and the longer duration wins).
+        """
         BREAK_SEC = self.idle_break_threshold_min * 60
-        breaks = []
+        # Each entry: (break_end_dt, duration_min)
+        raw_breaks: list[tuple[datetime, float]] = []
 
-        # Method A: explicit idle columns
-        for log in logs:
-            if log["idle_duration_sec"] >= BREAK_SEC:
-                breaks.append(log["idle_duration_sec"] / 60)
-
-        # Method B: time gaps between consecutive sessions
         sorted_logs = sorted(logs, key=lambda r: r["start_time"])
+
+        # Method A: explicit idle column — break ends at log's end_time
+        for log in sorted_logs:
+            if log["idle_duration_sec"] >= BREAK_SEC:
+                try:
+                    end_dt = datetime.fromisoformat(log["end_time"])
+                    raw_breaks.append((end_dt, log["idle_duration_sec"] / 60))
+                except (ValueError, TypeError):
+                    continue
+
+        # Method B: time gaps between consecutive sessions — break ends at curr_start
         for i in range(1, len(sorted_logs)):
             try:
                 prev_end = datetime.fromisoformat(sorted_logs[i - 1]["end_time"])
                 curr_start = datetime.fromisoformat(sorted_logs[i]["start_time"])
                 gap_sec = (curr_start - prev_end).total_seconds()
                 if gap_sec >= BREAK_SEC:
-                    breaks.append(gap_sec / 60)
+                    raw_breaks.append((curr_start, gap_sec / 60))
             except (ValueError, TypeError):
                 continue
 
-        has_taken_break = len(breaks) > 0
-        longest_break = max(breaks) if breaks else 0.0
+        # Deduplicate: sort by timestamp, merge events within 2-minute proximity
+        raw_breaks.sort(key=lambda x: x[0])
+        deduped: list[tuple[datetime, float]] = []
+        for ts, dur in raw_breaks:
+            if deduped and (ts - deduped[-1][0]).total_seconds() < 120:
+                # Same physical break — keep the longer duration
+                if dur > deduped[-1][1]:
+                    deduped[-1] = (ts, dur)
+            else:
+                deduped.append((ts, dur))
 
-        # Time since most recent break (scan from end)
+        has_taken_break = len(deduped) > 0
+        longest_break = max((d for _, d in deduped), default=0.0)
+
+        # Time since most recent break
         now = datetime.now()
-        min_since_break = float("inf")
-
-        for log in reversed(sorted_logs):
-            try:
-                if log["idle_duration_sec"] >= BREAK_SEC:
-                    last_break_end = datetime.fromisoformat(log["end_time"])
-                    min_since_break = (now - last_break_end).total_seconds() / 60
-                    break
-            except (ValueError, TypeError):
-                continue
-
-        # Also check inter-log gaps (most recent gap wins if smaller)
-        for i in range(len(sorted_logs) - 1, 0, -1):
-            try:
-                prev_end = datetime.fromisoformat(sorted_logs[i - 1]["end_time"])
-                curr_start = datetime.fromisoformat(sorted_logs[i]["start_time"])
-                gap_sec = (curr_start - prev_end).total_seconds()
-                if gap_sec >= BREAK_SEC:
-                    gap_since = (now - curr_start).total_seconds() / 60
-                    if gap_since < min_since_break:
-                        min_since_break = gap_since
-                    break
-            except (ValueError, TypeError):
-                continue
-
-        if min_since_break == float("inf"):
-            # No break found — proxy: total session duration
+        if deduped:
+            last_break_ts = deduped[-1][0]
+            min_since_break = (now - last_break_ts).total_seconds() / 60
+        else:
+            # No break detected — proxy with total active time
             min_since_break = sum(l["duration_sec"] for l in logs) / 60
 
         return min_since_break, has_taken_break, longest_break
@@ -290,17 +297,28 @@ class NudgeContextAggregator:
     # ── Flow Streak ────────────────────────────────────────────────────────
 
     def _compute_flow_streaks(self, logs) -> tuple:
-        """Return (current_consecutive_flow_min, peak_flow_min_today)."""
+        """Return (current_consecutive_flow_min, peak_flow_min_today).
+
+        Bug 3 fix: a single non-Flow block (e.g. a quick Google search mid-session)
+        no longer resets the streak. Two consecutive non-Flow blocks are required to
+        consider the Flow session broken.
+        """
         sorted_logs = sorted(logs, key=lambda r: r["start_time"])
         current_streak = 0.0
         peak_streak = 0.0
+        non_flow_run = 0  # consecutive non-Flow block counter
 
         for log in sorted_logs:
             if log["context_state"] == "Flow":
                 current_streak += max(0, log["duration_sec"] - log["idle_duration_sec"]) / 60
                 peak_streak = max(peak_streak, current_streak)
+                non_flow_run = 0
             else:
-                current_streak = 0.0
+                non_flow_run += 1
+                if non_flow_run >= 2:
+                    # Two consecutive non-Flow blocks = genuine break in concentration
+                    current_streak = 0.0
+                    non_flow_run = 0
 
         return current_streak, peak_streak
 
@@ -310,15 +328,28 @@ class NudgeContextAggregator:
         self,
         active_sec_today: int,
         min_since_break: float,
+        longest_break_min: float,
         corr_trend: str,
         kpm_trend: str,
         distraction_ratio_window: float,
         idle_ratio_window: float,
     ) -> tuple:
-        """Weighted composite fatigue score (0–1) and level string."""
+        """Weighted composite fatigue score (0–1) and level string.
+
+        Design 6 fix: breaks are a *multiplier* on the hours component rather than
+        an independent additive term. A 30-min break halves the hours contribution —
+        6 hours with a proper rest is materially less fatiguing than 6 straight hours.
+        The break_score additive term still contributes for the *recency* of the last
+        break (min_since_break), independent of session length.
+        """
         hours = active_sec_today / 3600
 
-        length_score = min(hours / 8.0, 1.0)
+        # Hours component — mitigated by the longest break taken today
+        hour_base = min(hours / 8.0, 1.0)
+        # rest_factor: 0 = no break (full penalty), 0.5 at 30-min break, saturates at 60 min
+        rest_factor = 1.0 - (0.5 * min(longest_break_min / 30.0, 1.0))
+        length_score = hour_base * rest_factor
+
         break_score  = min(min_since_break / 120.0, 1.0)
         kpm_score    = 1.0 if kpm_trend == "declining" else (0.4 if kpm_trend == "stable" else 0.0)
         corr_score   = 1.0 if corr_trend == "worsening" else (0.4 if corr_trend == "stable" else 0.0)
@@ -355,9 +386,8 @@ class NudgeContextAggregator:
         flow_ratio_today = context_today.get("Flow", 0.0)
         active_hours = active_sec_today / 3600
 
-        # Suppress nudge if session is very short (not enough signal)
-        if active_hours < 0.25:
-            return "MOTIVATION", "Session just started — early encouragement"
+        # Bug 5 fix: the scheduler's min_active_min gate (raised to 15 min) already
+        # prevents nudges on very short sessions; this redundant priority is removed.
 
         if hour >= self.late_night_hour:
             return "LATE_NIGHT", f"It's {hour}:xx — working late"
