@@ -267,6 +267,29 @@ class Database:
                 updated_at TEXT
             )
             """,
+
+            # ── Nudge Layer (Phase 5) ─────────────────────────────────────
+            """
+            CREATE TABLE IF NOT EXISTS nudge_log (
+                nudge_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                generated_at      TEXT    NOT NULL,
+                nudge_type        TEXT    NOT NULL,
+                nudge_text        TEXT    NOT NULL DEFAULT '',
+                rationale         TEXT,
+                fatigue_score     REAL,
+                fatigue_level     TEXT,
+                flow_ratio_today  REAL,
+                active_min_today  REAL,
+                min_since_break   REAL,
+                top_project       TEXT,
+                was_suppressed    INTEGER NOT NULL DEFAULT 0,
+                suppression_reason TEXT,
+                llm_used          INTEGER NOT NULL DEFAULT 0,
+                context_snapshot  TEXT
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_nudge_generated ON nudge_log(generated_at)",
+            "CREATE INDEX IF NOT EXISTS idx_nudge_suppressed ON nudge_log(was_suppressed, generated_at)",
         ]
 
         with self._lock:

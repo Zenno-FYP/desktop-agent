@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zenno Nudge</title>
+  <style>
+    /* ── Reset & Variables ─────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0f0f13;
+      --surface:    #1a1a24;
+      --border:     #2a2a3a;
+      --text:       #e8e8f0;
+      --muted:      #8888a0;
+      --accent:     #6c5ce7;
+      --radius:     12px;
+      --transition: 0.2s ease;
+
+      /* Per-type accent colours (overridden by JS) */
+      --type-color: #6c5ce7;
+      --type-glow:  rgba(108, 92, 231, 0.25);
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      -webkit-user-select: none;
+      user-select: none;
+      animation: slideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+    }
+
+    @keyframes slideIn {
+      from { transform: translateY(-40px); opacity: 0; }
+      to   { transform: translateY(0);     opacity: 1; }
+    }
+
+    @keyframes slideOut {
+      from { transform: translateY(0);     opacity: 1; }
+      to   { transform: translateY(-40px); opacity: 0; }
+    }
+
+    body.dismiss { animation: slideOut 0.25s ease-in forwards; }
+
+    /* ── Card ──────────────────────────────────────────────────── */
+    .card {
+      width: 100%;
+      height: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      border-left: 3px solid var(--type-color);
+      box-shadow:
+        0 8px 32px rgba(0, 0, 0, 0.55),
+        0 0 0 1px rgba(255, 255, 255, 0.04) inset,
+        0 2px 16px var(--type-glow);
+      display: flex;
+      flex-direction: column;
+      padding: 14px 16px 10px;
+      gap: 6px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Subtle gradient shimmer behind the left border */
+    .card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(
+        105deg,
+        var(--type-glow) 0%,
+        transparent 40%
+      );
+      pointer-events: none;
+      border-radius: inherit;
+    }
+
+    /* ── Header Row ────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .icon {
+      font-size: 18px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .meta {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .app-name {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--type-color);
+    }
+
+    .nudge-type {
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: 0.4px;
+      margin-top: 1px;
+    }
+
+    .btn-close {
+      flex-shrink: 0;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background var(--transition), color var(--transition);
+    }
+    .btn-close:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+    }
+
+    /* ── Body Text ─────────────────────────────────────────────── */
+    .nudge-text {
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--text);
+      padding-left: 26px; /* align under meta, past icon */
+    }
+
+    /* ── Progress Bar ──────────────────────────────────────────── */
+    .progress-wrap {
+      margin-top: 4px;
+      height: 2px;
+      background: rgba(255, 255, 255, 0.07);
+      border-radius: 1px;
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      height: 100%;
+      width: 100%;
+      background: var(--type-color);
+      border-radius: 1px;
+      transform-origin: left;
+      animation: shrink var(--dismiss-ms, 7000ms) linear forwards;
+    }
+
+    @keyframes shrink {
+      from { transform: scaleX(1); }
+      to   { transform: scaleX(0); }
+    }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="header">
+      <span class="icon" id="icon">💡</span>
+      <div class="meta">
+        <div class="app-name">ZENNO</div>
+        <div class="nudge-type" id="nudge-type-label">Nudge</div>
+      </div>
+      <button class="btn-close" onclick="dismiss()" title="Dismiss">✕</button>
+    </div>
+
+    <p class="nudge-text" id="nudge-text">Loading…</p>
+
+    <div class="progress-wrap">
+      <div class="progress-bar" id="progress"></div>
+    </div>
+  </div>
+
+  <script>
+    /* ── Type config ─────────────────────────────────────────── */
+    const TYPE_CONFIG = {
+      BREAK_REMINDER:   { icon: '🧘', color: '#00b894', glow: 'rgba(0,184,148,0.22)',   label: 'Break Reminder'   },
+      FLOW_CELEBRATION: { icon: '🔥', color: '#fdcb6e', glow: 'rgba(253,203,110,0.22)', label: 'Flow State'       },
+      REENGAGEMENT:     { icon: '🎯', color: '#6c5ce7', glow: 'rgba(108,92,231,0.22)',  label: 'Refocus'          },
+      MOTIVATION:       { icon: '💪', color: '#0984e3', glow: 'rgba(9,132,227,0.22)',   label: 'Motivation'       },
+      FATIGUE_WARNING:  { icon: '⚠️', color: '#e17055', glow: 'rgba(225,112,85,0.22)', label: 'Fatigue Warning'  },
+      LATE_NIGHT:       { icon: '🌙', color: '#a29bfe', glow: 'rgba(162,155,254,0.22)', label: 'Working Late'     },
+      ACHIEVEMENT:      { icon: '🏆', color: '#f9ca24', glow: 'rgba(249,202,36,0.22)',  label: 'Achievement'      },
+    };
+    const DEFAULT_CFG = { icon: '💡', color: '#6c5ce7', glow: 'rgba(108,92,231,0.22)', label: 'Nudge' };
+
+    let dismissTimer = null;
+
+    function init(nudgeType, nudgeText, displayMs) {
+      const cfg = TYPE_CONFIG[nudgeType] || DEFAULT_CFG;
+
+      document.getElementById('icon').textContent        = cfg.icon;
+      document.getElementById('nudge-type-label').textContent = cfg.label;
+      document.getElementById('nudge-text').textContent  = nudgeText;
+
+      const root = document.documentElement;
+      root.style.setProperty('--type-color', cfg.color);
+      root.style.setProperty('--type-glow',  cfg.glow);
+      root.style.setProperty('--dismiss-ms', displayMs + 'ms');
+
+      dismissTimer = setTimeout(dismiss, displayMs);
+    }
+
+    function dismiss() {
+      if (dismissTimer) clearTimeout(dismissTimer);
+      document.body.classList.add('dismiss');
+      setTimeout(() => {
+        try { window.pywebview.api.close_window(); } catch (e) {}
+      }, 280);
+    }
+
+    /* Injected by Python after load */
+    // init(nudgeType, nudgeText, displayMs) is called from Python via evaluate_js
+  </script>
+</body>
+</html>

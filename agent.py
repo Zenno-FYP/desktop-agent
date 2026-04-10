@@ -18,6 +18,7 @@ from analyze.block_evaluator import BlockEvaluator
 from aggregate.loc_scanner import LOCScanner
 from aggregate.etl_pipeline import ETLPipeline
 from sync.activity_syncer import ActivitySyncer
+from nudge.nudge_scheduler import NudgeScheduler
 
 
 class ActivitySession:
@@ -209,6 +210,30 @@ class DesktopAgent:
         self.activity_syncer = ActivitySyncer(self.db)
         self.sync_interval_sec = self.config.get("sync.interval_sec", 900)  # 15 min default (mirrors ETL)
         self.last_sync_time = time.time()  # Initialize to now; first sync waits 15 minutes
+
+        # Initialize Phase 5: Nudge Scheduler (wellbeing & motivation engine)
+        nudge_cfg = self.config.get("nudge", {}) or {}
+        self.nudge_scheduler: NudgeScheduler | None = None
+        if nudge_cfg.get("enabled", True):
+            llm_cfg  = nudge_cfg.get("llm", {}) or {}
+            notif_cfg = nudge_cfg.get("notification", {}) or {}
+            self.nudge_scheduler = NudgeScheduler(
+                db_path=self.db_path,
+                interval_min=int(nudge_cfg.get("interval_min", 30)),
+                suppression_min=int(nudge_cfg.get("suppression_min", 25)),
+                window_min=int(nudge_cfg.get("window_min", 30)),
+                min_active_min=float(nudge_cfg.get("min_active_min", 10.0)),
+                idle_break_threshold_min=int(nudge_cfg.get("idle_break_threshold_min", 5)),
+                late_night_hour=int(nudge_cfg.get("late_night_hour", 21)),
+                flow_streak_min=float(nudge_cfg.get("flow_streak_min", 45.0)),
+                break_reminder_min=float(nudge_cfg.get("break_reminder_min", 90.0)),
+                distraction_threshold=float(nudge_cfg.get("distraction_threshold", 0.30)),
+                llm_enabled=bool(llm_cfg.get("enabled", True)),
+                llm_timeout_sec=float(llm_cfg.get("timeout_sec", 4.0)),
+                notification_enabled=bool(notif_cfg.get("enabled", True)),
+                notification_display_sec=int(notif_cfg.get("display_sec", 7)),
+            )
+            self.logger.info("[Agent] NudgeScheduler initialized")
         
         # Session tracking
         self.current_session = None
@@ -251,6 +276,10 @@ class DesktopAgent:
 
         # Start global keyboard/mouse listeners once.
         self.metrics.start_listening()
+
+        # Start nudge scheduler (background thread)
+        if self.nudge_scheduler:
+            self.nudge_scheduler.start()
         
         try:
             while True:
@@ -533,6 +562,10 @@ class DesktopAgent:
         
         # Stop background block evaluator
         self.block_evaluator.stop()
+
+        # Stop nudge scheduler
+        if self.nudge_scheduler:
+            self.nudge_scheduler.stop()
         
         # Flush final session
         if self.current_session:

@@ -76,7 +76,6 @@ heuristics:
   # This is NORMAL - developers read before/after typing
   typing_kpm_flow_min: 0             # Minimum for Flow (allow reading code, zero is normal!)
   typing_kpm_research_max: 1         # Maximum for Research (reading = 0 typing, tolerance=1)
-  typing_kpm_pure_reading: 2         # Threshold for \"pure reading\" mode (0 typing + high clicks = Research)
   
   # SIGNAL 1: Correction Ratio (deletion_keys / total_keystrokes)
   # PRIMARY DIFFERENTIATOR between DEBUGGING and FLOW
@@ -104,7 +103,6 @@ heuristics:
   # Real Research (n=10): 1.16-35.98 CPM, mean=15.71 (HIGH - clicking links, expanding blocks)
   # KEY: Research = HIGH clicks + ZERO typing = Link navigation in reading
   mouse_cpm_research_light: 8        # Min CPM for Research (was 10 - real min is 1.16, mean 15.71)
-  mouse_cpm_research_high: 30        # Max CPM for Research (clicking limit, real max 35.98)
   mouse_cpm_distraction_high: 20     # Min CPM for Distraction (high interaction)
   
   # SIGNAL 4: App Switch Frequency (NOTE: PER 5-MIN BLOCK, NOT PER HOUR)
@@ -179,7 +177,6 @@ project_detector:
   # Structure:
   #   - name: Display name (for logging/reports)
   #   - executable_names: List of .exe names to match (case-insensitive) - PRIMARY IDENTIFIER
-  #   - title_suffixes: DEPRECATED - No longer used (kept for reference only)
   #   - title_format: Parsing rule - "vscode" (filename - path - IDE) or "pycharm" (project - [file])
   # 
   # IMPORTANT: IDE detection is NOW BASED ONLY on executable names, not window title.
@@ -189,57 +186,46 @@ project_detector:
   # Example entry:
   #   - name: "RustRover"
   #     executable_names: ["rustrover.exe", "rustrover"]
-  #     title_suffixes: ["RustRover"]  # For reference only, not used in detection
   #     title_format: "pycharm"
   ides:
     - name: "VS Code"
       executable_names: ["code.exe", "code", "code-oss"]
-      title_suffixes: ["Visual Studio Code"]
       title_format: "vscode"
     
     - name: "Cursor"
       executable_names: ["cursor.exe", "cursor-win.exe", "cursor-linux", "cursor"]
-      title_suffixes: ["Cursor"]
       title_format: "vscode"
     
     - name: "Antigravity"
       executable_names: ["antigravity.exe", "antigravity"]
-      title_suffixes: ["Antigravity"]
       title_format: "generic"
     
     - name: "PyCharm"
       executable_names: ["pycharm64.exe", "pycharm32.exe", "pycharm.exe", "pycharm", "pycharmce.exe"]
-      title_suffixes: ["PyCharm"]
       title_format: "pycharm"
     
     - name: "IntelliJ IDEA"
       executable_names: ["idea64.exe", "idea.exe", "idea", "intellij"]
-      title_suffixes: ["IntelliJ", "IDEA"]
       title_format: "pycharm"
     
     - name: "WebStorm"
       executable_names: ["webstorm64.exe", "webstorm.exe", "webstorm"]
-      title_suffixes: ["WebStorm"]
       title_format: "pycharm"
     
     - name: "Sublime Text"
       executable_names: ["sublime.exe", "sublime_text.exe", "sublime"]
-      title_suffixes: ["Sublime Text"]
       title_format: "generic"
     
     - name: "Vim/Neovim"
       executable_names: ["nvim.exe", "nvim", "vim.exe", "vim"]
-      title_suffixes: ["VIM", "nvim"]
       title_format: "generic"
     
     - name: "Emacs"
       executable_names: ["emacs.exe", "emacs"]
-      title_suffixes: ["Emacs"]
       title_format: "generic"
     
     - name: "Atom"
       executable_names: ["atom.exe", "atom"]
-      title_suffixes: ["Atom"]
       title_format: "generic"
 
   # Project root markers to look for when resolving paths
@@ -590,24 +576,6 @@ esm_popup:
   # UI Settings
   ui:
     auto_dismiss_seconds: 30   # Auto-close popup after 30 seconds
-    window_geometry: "550x280+950+50"  # Size and position (wider for 3-col button layout)
-    
-    # Colors (hex format)
-    colors:
-      background: "#2b2b2b"      # Dark background (charcoal)
-      text: "#ffffff"            # White text
-      subtext: "#cccccc"         # Light gray subtext
-      button_positive: "#1a7f12" # Green (Flow, Debugging, Research, Communication - work states)
-      button_negative: "#7f1212" # Red (Distracted - off-task state)
-      button_hover_pos: "#2a9f22"    # Bright green hover
-      button_hover_neg: "#9f2222"    # Bright red hover
-    
-    # Typography
-    fonts:
-      title: "Arial 11 bold"
-      message: "Arial 10"
-      subtext: "Arial 9"
-      button: "Arial 9 bold"
 
 ## PHASE 4: Aggregation Pipeline Settings
 
@@ -1008,3 +976,47 @@ logging:
   level: ERROR                # DEBUG, INFO, WARNING, ERROR
   file: ./logs/agent.log
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+
+## PHASE 5: Nudge Layer Settings
+# The nudge engine reads existing pipeline data (read-only) and generates
+# friendly AI-driven developer wellbeing nudges via desktop notifications.
+
+nudge:
+  enabled: true
+
+  # How often the scheduler fires (minutes between each check)
+  interval_min: 30
+
+  # Minimum gap between two visible nudges (minutes)
+  suppression_min: 25
+
+  # Look-back window for "recent" signals (minutes)
+  window_min: 30
+
+  # Idle gap (minutes) that counts as a proper break
+  idle_break_threshold_min: 5
+
+  # Hour after which LATE_NIGHT nudge type activates (24-hour clock)
+  late_night_hour: 21
+
+  # Minimum unbroken Flow minutes to trigger FLOW_CELEBRATION
+  flow_streak_min: 45
+
+  # Minutes without a break before BREAK_REMINDER fires
+  break_reminder_min: 90
+
+  # Distracted ratio (last window) above which REENGAGEMENT fires
+  distraction_threshold: 0.30
+
+  # Minimum active minutes today before any nudge is shown
+  min_active_min: 10.0
+
+  llm:
+    enabled: true                     # Set false to always use fallback templates
+    model: "gemini-2.0-flash"         # Gemini model name (uses GEMINI_API_KEY from .env)
+    timeout_sec: 4.0                  # Max seconds to wait for LLM response
+
+  notification:
+    enabled: true                     # Show desktop notification window
+    display_sec: 7                    # How long the notification stays visible
