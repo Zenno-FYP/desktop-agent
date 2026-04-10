@@ -20,6 +20,8 @@ from aggregate.loc_scanner import LOCScanner
 from aggregate.etl_pipeline import ETLPipeline
 from sync.activity_syncer import ActivitySyncer
 from nudge.nudge_scheduler import NudgeScheduler
+from nudge.nudge_syncer import NudgeSyncer
+from nudge.preferences_poller import PreferencesPoller
 from nudge.user_preferences import UserPreferences
 
 
@@ -253,7 +255,20 @@ class DesktopAgent:
                 user_preferences=self._user_preferences,
             )
             self.logger.info("[Agent] NudgeScheduler initialized")
-        
+
+        # Initialize Nudge Syncer (uploads nudge_log rows to backend)
+        self.nudge_syncer = NudgeSyncer(db_path=self.db_path)
+
+        # Initialize Preferences Poller (polls backend for website-side setting changes)
+        def _on_prefs_change(updated_prefs: UserPreferences) -> None:
+            if self.nudge_scheduler:
+                self.nudge_scheduler.reload_preferences(updated_prefs)
+
+        self.preferences_poller = PreferencesPoller(
+            db_path=self.db_path,
+            on_change=_on_prefs_change,
+        )
+
         # Session tracking
         self.current_session = None
         self.current_app = None
@@ -302,6 +317,10 @@ class DesktopAgent:
         # Start nudge scheduler (background thread)
         if self.nudge_scheduler:
             self.nudge_scheduler.start()
+
+        # Start nudge syncer and preferences poller (background threads)
+        self.nudge_syncer.start()
+        self.preferences_poller.start()
         
         try:
             while True:
@@ -586,9 +605,11 @@ class DesktopAgent:
         # Stop background block evaluator
         self.block_evaluator.stop()
 
-        # Stop nudge scheduler
+        # Stop nudge scheduler, syncer, and preferences poller
         if self.nudge_scheduler:
             self.nudge_scheduler.stop()
+        self.nudge_syncer.stop()
+        self.preferences_poller.stop()
         
         # Flush final session
         if self.current_session:

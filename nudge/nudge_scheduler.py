@@ -122,6 +122,29 @@ class NudgeScheduler:
         self._running = False
         logger.info("[NudgeScheduler] Stopping")
 
+    def reload_preferences(self, prefs: "UserPreferences") -> None:
+        """Hot-reload user preferences without restarting the scheduler.
+
+        Called by PreferencesPoller when the backend returns updated settings
+        (e.g. the user changed their schedule on the website).
+        """
+        self._prefs = prefs
+        self.late_night_hour               = prefs.late_night_hour
+        self.flow_streak_min               = float(prefs.flow_streak_min)
+        self.break_reminder_min            = float(prefs.break_reminder_min)
+        self.meeting_suppression_threshold = prefs.meeting_suppression_threshold
+        self._persona                      = prefs.llm_persona_instruction
+        self._disabled_types               = prefs.disabled_nudge_types
+        self._quiet_window                 = prefs.quiet_window
+        override = prefs.nudge_interval_override_min
+        if override:
+            self.interval_sec = override * 60
+        logger.info(
+            "[NudgeScheduler] Preferences reloaded: schedule=%s focus=%s goal=%s meetings=%s",
+            prefs.work_schedule, prefs.focus_style,
+            prefs.wellbeing_goal, prefs.has_meetings,
+        )
+
     # ── Main Loop ──────────────────────────────────────────────────────────
 
     def _loop(self) -> None:
