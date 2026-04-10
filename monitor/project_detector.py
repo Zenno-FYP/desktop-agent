@@ -25,6 +25,7 @@ class ProjectDetector:
         self.watch_dirs = self._get_watch_dirs()
         self.language_extensions = self._get_language_extensions()
         self.lightweight_search_cfg = self._get_lightweight_search_cfg()
+        self.ides_config = self._get_ide_configurations()
 
     def _get_project_markers(self):
         """Get project markers from config.yaml (required)."""
@@ -87,6 +88,73 @@ class ProjectDetector:
             "time_limit_sec": float(cfg.get("time_limit_sec", 0.0)),
             "search_system_drive_last": bool(cfg.get("search_system_drive_last", False)),
         }
+
+    def _get_ide_configurations(self):
+        """Get IDE detection configurations from config.yaml.
+        
+        Structure:
+        ```yaml
+        ides:
+          - name: "VS Code"
+            executable_names: ["code.exe", "code"]
+            title_suffixes: ["Visual Studio Code"]
+            title_format: "vscode"
+        ```
+        
+        Returns:
+            list: List of IDE config dicts, or empty list if config unavailable
+        """
+        if not self.config:
+            return []
+        
+        ides_raw = self.config.get("project_detector.ides", []) or []
+        
+        # Normalize: convert executable_names and title_suffixes to lowercase for case-insensitive matching
+        ides_normalized = []
+        for ide in ides_raw:
+            if not isinstance(ide, dict):
+                continue
+            
+            normalized_ide = {
+                "name": ide.get("name", "Unknown IDE"),
+                "executable_names": {name.lower() for name in ide.get("executable_names", [])},
+                "title_suffixes": {suffix.lower() for suffix in ide.get("title_suffixes", [])},
+                "title_format": ide.get("title_format", "generic"),
+            }
+            ides_normalized.append(normalized_ide)
+        
+        return ides_normalized
+
+    def _find_matching_ide(self, app_name: str, window_title: str) -> Optional[dict]:
+        """Find which IDE configuration matches the current app/window.
+        
+        IMPORTANT: Only matches based on EXECUTABLE NAME, not window title.
+        This prevents browser tabs (Brave, Chrome) containing IDE keywords from 
+        being misidentified as actual IDEs.
+        
+        Example:
+        - Brave browser with tab "VS Code tutorial" → NOT matched as VS Code IDE
+        - code.exe with title "main.py - /project" → Matched as VS Code IDE
+        
+        Args:
+            app_name: Executable name (e.g., "code.exe")
+            window_title: Full window title
+            
+        Returns:
+            dict: Matching IDE config, or None if no match found
+        """
+        app_name_lower = app_name.lower() if app_name else ""
+        
+        for ide_config in self.ides_config:
+            # Only check if executable name matches (case-insensitive partial match)
+            # This is the ONLY reliable way to identify IDEs vs browsers
+            if any(exe_name in app_name_lower for exe_name in ide_config["executable_names"]):
+                return ide_config
+        
+        # Title suffix matching is disabled to prevent false positives
+        # (e.g., Brave browser opening a tab about VS Code shouldn't be treated as VS Code IDE)
+        
+        return None
 
     def _lightweight_drive_search(self, active_file_name: str, expected_project_name: str) -> Optional[str]:
         """Strictly bounded, high-speed fallback search across drives.
@@ -224,6 +292,8 @@ class ProjectDetector:
                                    window_title: str) -> Tuple[Optional[str], Optional[str]]:
         """Extract project and file info from IDE window title.
         
+        Uses IDE configurations from config.yaml for flexible, extensible IDE support.
+        
         Args:
             app_name: Application name (e.g., 'code.exe')
             window_title: Full window title
@@ -234,17 +304,25 @@ class ProjectDetector:
         if not window_title:
             return None, None
         
-        app_name_lower = app_name.lower() if app_name else ""
+        # Try to find matching IDE from config
+        matched_ide = self._find_matching_ide(app_name, window_title)
         
-        # VS Code pattern: "filename - path/to/project - Visual Studio Code"
-        if 'code.exe' in app_name_lower or 'visual studio code' in window_title.lower():
-            return self._parse_vscode_title(window_title)
+        if matched_ide:
+            title_format = matched_ide.get("title_format", "generic")
+            
+            if title_format == "vscode":
+                # Format: "filename - /path/to/project - IDE_Name"
+                return self._parse_title_vscode_format(window_title, matched_ide["name"])
+            
+            elif title_format == "pycharm":
+                # Format: "project_name - [file.py]" or "[file.py] - project_name"
+                return self._parse_title_pycharm_format(window_title)
+            
+            else:  # generic fallback
+                # For generic IDEs, try to extract from title
+                return self._parse_title_generic_format(window_title)
         
-        # PyCharm pattern: "project_name - [file.py]"
-        if 'pycharm' in app_name_lower or 'idea' in app_name_lower:
-            return self._parse_pycharm_title(window_title)
-        
-        # Browser/generic pattern: extract tab title, removing only the last ` - <browser_name>` if present
+        # No IDE matched - handle as browser/generic application
         if ' - ' in window_title:
             # For browsers (Chrome, Firefox, Edge, Brave, Safari, Opera, etc.),
             # the format is typically: "Tab Title - Browser Name"
@@ -278,13 +356,13 @@ class ProjectDetector:
         
         return None, None
 
-    def _parse_vscode_title(self, window_title: str) -> Tuple[Optional[str], Optional[str]]:
-        """Parse VS Code window title format.
+    def _parse_title_vscode_format(self, window_title: str, ide_name: str) -> Tuple[Optional[str], Optional[str]]:
+        """Parse VS Code / Cursor style title format.
         
-        Format: "filename - /path/to/project - Visual Studio Code"
+        Format: "filename - /path/to/project - IDE_Name"
         """
-        # Remove "Visual Studio Code" suffix
-        title = window_title.replace('Visual Studio Code', '').strip('- ')
+        # Remove IDE name suffix (e.g., "Visual Studio Code", "Cursor")
+        title = window_title.replace(ide_name, '').strip('- ')
         
         parts = [p.strip() for p in title.split(' - ')]
         
@@ -296,8 +374,8 @@ class ProjectDetector:
         
         return None, parts[0] if parts else None
 
-    def _parse_pycharm_title(self, window_title: str) -> Tuple[Optional[str], Optional[str]]:
-        """Parse PyCharm window title format.
+    def _parse_title_pycharm_format(self, window_title: str) -> Tuple[Optional[str], Optional[str]]:
+        """Parse PyCharm / IntelliJ style title format.
         
         Format: "project_name - [file.py]" or "[file.py] - project_name"
         """
@@ -310,6 +388,22 @@ class ProjectDetector:
         project_name = dash_parts[0].strip() if dash_parts else None
         
         return project_name, active_file
+
+    def _parse_title_generic_format(self, window_title: str) -> Tuple[Optional[str], Optional[str]]:
+        """Parse generic IDE title format.
+        
+        Tries to extract project and file from title with basic heuristics.
+        """
+        if ' - ' in window_title:
+            parts = [p.strip() for p in window_title.split(' - ')]
+            if len(parts) >= 2:
+                # Assume: filename - project_name format
+                return parts[-1], parts[0]
+            elif len(parts) == 1:
+                # Just one part, treat as active file
+                return None, parts[0]
+        
+        return None, window_title
 
     def detect_project(self, 
                       app_name: str, 
@@ -371,21 +465,33 @@ class ProjectDetector:
         if not window_title:
             return None
         
-        app_name_lower = app_name.lower() if app_name else ""
-        
         # Layer 2: Extract from title and check known safe directories
         extracted_name = None
         
-        if 'code.exe' in app_name_lower or 'visual studio code' in window_title.lower():
-            title = window_title.replace('Visual Studio Code', '').strip('- ')
-            parts = [p.strip() for p in title.split(' - ')]
-            if len(parts) >= 2:
-                extracted_name = parts[1]
-                
-        elif 'pycharm' in app_name_lower or 'idea' in app_name_lower:
-            dash_parts = window_title.split(' - ')
-            if dash_parts:
-                extracted_name = dash_parts[0].strip()
+        # Use IDE configuration to extract project name from window title
+        matched_ide = self._find_matching_ide(app_name, window_title)
+        if matched_ide:
+            title_format = matched_ide.get("title_format", "generic")
+            
+            if title_format == "vscode":
+                # Format: "filename - /path/to/project - IDE_Name"
+                title = window_title.replace(matched_ide["name"], '').strip('- ')
+                parts = [p.strip() for p in title.split(' - ')]
+                if len(parts) >= 2:
+                    extracted_name = parts[1]
+                    
+            elif title_format == "pycharm":
+                # Format: "project_name - [file.py]"
+                dash_parts = window_title.split(' - ')
+                if dash_parts:
+                    extracted_name = dash_parts[0].strip()
+            
+            else:  # generic
+                # Try basic extraction
+                if ' - ' in window_title:
+                    parts = [p.strip() for p in window_title.split(' - ')]
+                    if len(parts) >= 2:
+                        extracted_name = parts[-1]
 
         # If we successfully parsed a name from the title, safely resolve it
         if extracted_name:

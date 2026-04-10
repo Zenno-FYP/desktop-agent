@@ -7,8 +7,9 @@ error recovery (including token refresh), and marking records as synced.
 import os
 import json
 import logging
+import time
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -24,94 +25,88 @@ load_dotenv()
 
 _BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://localhost:3000/api/v1")
 _TIMEOUT = int(os.getenv("SYNC_TIMEOUT_SECONDS", "30"))
+_TRANSIENT_RETRIES = 3
+_INITIAL_BACKOFF_SEC = 2
 
 
 class ActivitySyncer:
     """Sync activity aggregates to backend API."""
 
     def __init__(self, db, user_id: Optional[str] = None):
-        """Initialize syncer.
-        
-        Args:
-            db: Database instance
-            user_id: Backend user ID. If None, will be fetched from local_user table.
-        """
         self.db = db
         self.user_id = user_id
         self.collector = ActivityCollector(db)
 
     def sync_activity(self) -> bool:
         """Perform full sync of pending activity data to backend.
-        
-        Flow:
-        1. Collect pending projects from SQLite
-        2. Build sync payload (user_id, sync_timestamp, data)
-        3. Get Firebase ID token
-        4. POST to /sync/activity endpoint
-        5. On success: mark all records as synced (needs_sync = 0)
-        6. On 401: refresh token and retry once
-        7. On other errors: log and return False
-        
-        Returns:
-            True if entire sync succeeded, False otherwise.
-            On failure, no records are marked as synced (safe for retry).
+
+        Returns True if sync succeeded, False otherwise.
+        On failure no records are marked as synced (safe for retry).
         """
+        sync_start = time.monotonic()
         try:
             logger.info("[ActivitySyncer] Starting sync cycle")
-            
-            # Collect pending projects
+
             projects = self.collector.collect_pending_projects()
-            
+
             if not projects:
                 logger.debug("[ActivitySyncer] No pending projects; sync complete")
                 return True
-            
-            logger.info(f"[ActivitySyncer] Collected {len(projects)} projects with pending data")
-            
-            # Build request payload
+
+            logger.info(
+                "[ActivitySyncer] Collected %d projects with pending data",
+                len(projects),
+            )
+
             payload = self._build_payload(projects)
-            
-            # Get Firebase ID token
+
             id_token = self._get_id_token()
             if not id_token:
                 logger.error("[ActivitySyncer] Failed to obtain ID token")
                 return False
-            
-            # Send request
+
             try:
-                response = self._send_sync_request(payload, id_token)
+                self._send_sync_request(payload, id_token)
                 logger.info("[ActivitySyncer] Sync succeeded; marking records as synced")
-                
-                # Mark all synced records
                 self._mark_all_synced(projects)
+                self._log_outcome(True, len(projects), sync_start)
                 return True
-                
+
             except requests.HTTPError as e:
-                if e.response.status_code == 401:
-                    # Token expired; try refreshing and retrying once
-                    logger.info("[ActivitySyncer] Got 401; attempting token refresh and retry")
-                    return self._retry_with_refreshed_token(payload, projects)
-                else:
-                    # Other HTTP error
-                    logger.error(
-                        f"[ActivitySyncer] HTTP error {e.response.status_code}: {e.response.text}"
+                status = e.response.status_code if e.response is not None else 0
+                if status == 401:
+                    logger.info(
+                        "[ActivitySyncer] Got 401 (auth); attempting token refresh and retry"
                     )
-                    return False
-            
+                    ok = self._retry_with_refreshed_token(payload, projects)
+                    self._log_outcome(ok, len(projects), sync_start, "401-retry")
+                    return ok
+                if status >= 500 or status == 0:
+                    ok = self._retry_transient(payload, projects)
+                    self._log_outcome(ok, len(projects), sync_start, "transient-retry")
+                    return ok
+                logger.error(
+                    "[ActivitySyncer] Client error %d: %s",
+                    status,
+                    e.response.text if e.response is not None else "",
+                )
+                self._log_outcome(False, len(projects), sync_start, f"http-{status}")
+                return False
+
+            except (requests.ConnectionError, requests.Timeout) as e:
+                logger.warning("[ActivitySyncer] Network error: %s", e)
+                ok = self._retry_transient(payload, projects)
+                self._log_outcome(ok, len(projects), sync_start, "network-retry")
+                return ok
+
         except Exception as e:
-            logger.error(f"[ActivitySyncer] Unexpected error: {e}", exc_info=True)
+            logger.error("[ActivitySyncer] Unexpected error: %s", e, exc_info=True)
+            self._log_outcome(False, 0, sync_start, "exception")
             return False
 
+    # ------------------------------------------------------------------ helpers
+
     def _build_payload(self, projects: list[dict]) -> dict:
-        """Build sync API request payload.
-        
-        Args:
-            projects: List of project dicts from ActivityCollector
-            
-        Returns:
-            Request body dict ready for JSON serialization
-        """
-        # Get user_id
         user_id = self.user_id
         if not user_id:
             local_user = self.db.get_local_user()
@@ -119,147 +114,132 @@ class ActivitySyncer:
                 user_id = local_user.get("_id")
             else:
                 raise ValueError("Cannot determine user_id; not signed in?")
-        
-        # Get current local time
+
         local_now = datetime.now()
-        
+        utc_offset = local_now.astimezone().utcoffset()
+        offset_minutes = int(utc_offset.total_seconds() // 60) if utc_offset else 0
+
         payload = {
             "user_id": user_id,
             "sync_timestamp": local_now.isoformat(),
+            "timezone_offset_minutes": offset_minutes,
             "data": projects,
         }
-        
-        logger.debug(f"[ActivitySyncer] Built payload with {len(projects)} projects")
+
+        logger.debug(
+            "[ActivitySyncer] Built payload with %d projects, tz_offset=%d min",
+            len(projects),
+            offset_minutes,
+        )
         return payload
 
     def _get_id_token(self) -> Optional[str]:
-        """Get current Firebase ID token.
-        
-        Will automatically refresh if expired. Returns None if unavailable.
-        
-        Returns:
-            Valid ID token or None if unavailable
-        """
         try:
             token = get_valid_id_token()
             if token:
-                logger.debug("[ActivitySyncer] Obtained ID token")
                 return token
-            else:
-                logger.warning("[ActivitySyncer] get_valid_id_token returned None")
-                return None
+            logger.warning("[ActivitySyncer] get_valid_id_token returned None")
+            return None
         except TokenError as e:
-            logger.error(f"[ActivitySyncer] Error getting ID token: {e}")
+            logger.error("[ActivitySyncer] TokenError: %s", e)
             return None
         except Exception as e:
-            logger.error(f"[ActivitySyncer] Unexpected error getting ID token: {e}")
+            logger.error("[ActivitySyncer] Unexpected error getting token: %s", e)
             return None
 
     def _send_sync_request(self, payload: dict, id_token: str) -> dict:
-        """Send sync request to backend.
-        
-        Args:
-            payload: Request body dict
-            id_token: Firebase ID token for Authorization header
-            
-        Returns:
-            Response JSON dict
-            
-        Raises:
-            requests.HTTPError: On non-2xx response
-        """
         url = f"{_BACKEND_BASE_URL}/sync/activity"
         headers = {
             "Authorization": f"Bearer {id_token}",
             "Content-Type": "application/json",
         }
-        
-        logger.info(f"[ActivitySyncer] Sending POST {url}")
-        logger.debug(f"[ActivitySyncer] Payload size: {len(json.dumps(payload))} bytes")
-        
-        response = requests.post(
-            url,
-            json=payload,
-            headers=headers,
-            timeout=_TIMEOUT,
-        )
-        
-        logger.debug(f"[ActivitySyncer] Response status: {response.status_code}")
-        
+
+        logger.info("[ActivitySyncer] POST %s", url)
+        response = requests.post(url, json=payload, headers=headers, timeout=_TIMEOUT)
+
         if response.status_code >= 400:
             raise requests.HTTPError(response=response)
-        
-        response_json = response.json()
-        logger.info(f"[ActivitySyncer] Sync response: {response_json.get('message', 'OK')}")
-        
-        return response_json
+
+        return response.json()
 
     def _retry_with_refreshed_token(self, payload: dict, projects: list[dict]) -> bool:
-        """Retry sync request after refreshing token.
-        
-        Since get_valid_id_token() automatically refreshes expired tokens,
-        we just fetch a fresh token and retry the request.
-        
-        Args:
-            payload: Request payload
-            projects: List of projects for marking synced on success
-            
-        Returns:
-            True if retry succeeded, False otherwise
-        """
         try:
-            logger.info("[ActivitySyncer] Got 401; fetching fresh token and retrying")
-            
-            # get_valid_id_token() will refresh automatically if needed
             id_token = self._get_id_token()
             if not id_token:
                 logger.error("[ActivitySyncer] Failed to obtain fresh token")
                 return False
-            
-            # Retry request with fresh token
-            logger.info("[ActivitySyncer] Retrying request with fresh token")
-            response = self._send_sync_request(payload, id_token)
-            
-            # Mark as synced
+            self._send_sync_request(payload, id_token)
             self._mark_all_synced(projects)
-            logger.info("[ActivitySyncer] Retry succeeded")
+            logger.info("[ActivitySyncer] Auth-retry succeeded")
             return True
-            
         except Exception as e:
-            logger.error(f"[ActivitySyncer] Token refresh/retry failed: {e}")
+            logger.error("[ActivitySyncer] Auth-retry failed: %s", e)
             return False
 
+    def _retry_transient(self, payload: dict, projects: list[dict]) -> bool:
+        """Retry with exponential backoff for transient / network errors."""
+        backoff = _INITIAL_BACKOFF_SEC
+        for attempt in range(1, _TRANSIENT_RETRIES + 1):
+            logger.info(
+                "[ActivitySyncer] Transient retry %d/%d in %.1fs",
+                attempt,
+                _TRANSIENT_RETRIES,
+                backoff,
+            )
+            time.sleep(backoff)
+            id_token = self._get_id_token()
+            if not id_token:
+                backoff *= 2
+                continue
+            try:
+                self._send_sync_request(payload, id_token)
+                self._mark_all_synced(projects)
+                logger.info("[ActivitySyncer] Transient retry %d succeeded", attempt)
+                return True
+            except (requests.HTTPError, requests.ConnectionError, requests.Timeout) as e:
+                logger.warning("[ActivitySyncer] Retry %d failed: %s", attempt, e)
+                backoff *= 2
+        logger.error("[ActivitySyncer] All transient retries exhausted")
+        return False
+
     def _mark_all_synced(self, projects: list[dict]):
-        """Mark all synced projects, dates, and skills as needs_sync = 0.
-        
-        Args:
-            projects: List of project dicts from sync payload
-        """
         try:
             for project in projects:
                 project_name = project.get("project_name")
                 days = project.get("days", [])
-                
-                # Mark all daily aggregates for this project as synced
+
                 for day in days:
                     date = day.get("date")
                     self.db.mark_project_synced(project_name, date)
-                
-                # Mark project-level data as synced
+
                 with self.db.conn:
-                    # Mark LOC snapshots
                     self.db.conn.execute(
                         "UPDATE project_loc_snapshots SET needs_sync = 0 WHERE project_name = ?",
                         (project_name,),
                     )
-                    # Mark cumulative skills
                     self.db.conn.execute(
                         "UPDATE project_skills SET needs_sync = 0 WHERE project_name = ?",
                         (project_name,),
                     )
-            
-            logger.info(f"[ActivitySyncer] Marked {len(projects)} projects as synced")
-            
+
+            logger.info("[ActivitySyncer] Marked %d projects as synced", len(projects))
         except Exception as e:
-            logger.error(f"[ActivitySyncer] Error marking records as synced: {e}")
+            logger.error("[ActivitySyncer] Error marking records as synced: %s", e)
             raise
+
+    @staticmethod
+    def _log_outcome(
+        success: bool,
+        project_count: int,
+        start_mono: float,
+        context: str = "",
+    ):
+        elapsed = time.monotonic() - start_mono
+        status = "OK" if success else "FAIL"
+        logger.info(
+            "[ActivitySyncer] outcome=%s projects=%d elapsed=%.2fs context=%s",
+            status,
+            project_count,
+            elapsed,
+            context or "first-attempt",
+        )
