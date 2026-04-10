@@ -173,6 +173,75 @@ heuristics:
 #   2. Window title parsing: Extract project/file from VS Code, PyCharm title formats
 #   3. Safe directory search: Bounded filesystem search (time + depth limits) as last resort
 project_detector:
+  # IDE Detection Configuration
+  # Used by: ProjectDetector._find_matching_ide() for dynamic IDE detection
+  # Purpose: Define IDEs and their executable names (no hardcoding)
+  # Structure:
+  #   - name: Display name (for logging/reports)
+  #   - executable_names: List of .exe names to match (case-insensitive) - PRIMARY IDENTIFIER
+  #   - title_suffixes: DEPRECATED - No longer used (kept for reference only)
+  #   - title_format: Parsing rule - "vscode" (filename - path - IDE) or "pycharm" (project - [file])
+  # 
+  # IMPORTANT: IDE detection is NOW BASED ONLY on executable names, not window title.
+  # This prevents browser tabs (Brave, Chrome) containing IDE keywords from being misidentified as IDEs.
+  # 
+  # Adding a new IDE: Just add a new entry below. Ensure unique executable_names. No code changes needed.
+  # Example entry:
+  #   - name: "RustRover"
+  #     executable_names: ["rustrover.exe", "rustrover"]
+  #     title_suffixes: ["RustRover"]  # For reference only, not used in detection
+  #     title_format: "pycharm"
+  ides:
+    - name: "VS Code"
+      executable_names: ["code.exe", "code", "code-oss"]
+      title_suffixes: ["Visual Studio Code"]
+      title_format: "vscode"
+    
+    - name: "Cursor"
+      executable_names: ["cursor.exe", "cursor-win.exe", "cursor-linux", "cursor"]
+      title_suffixes: ["Cursor"]
+      title_format: "vscode"
+    
+    - name: "Antigravity"
+      executable_names: ["antigravity.exe", "antigravity"]
+      title_suffixes: ["Antigravity"]
+      title_format: "generic"
+    
+    - name: "PyCharm"
+      executable_names: ["pycharm64.exe", "pycharm32.exe", "pycharm.exe", "pycharm", "pycharmce.exe"]
+      title_suffixes: ["PyCharm"]
+      title_format: "pycharm"
+    
+    - name: "IntelliJ IDEA"
+      executable_names: ["idea64.exe", "idea.exe", "idea", "intellij"]
+      title_suffixes: ["IntelliJ", "IDEA"]
+      title_format: "pycharm"
+    
+    - name: "WebStorm"
+      executable_names: ["webstorm64.exe", "webstorm.exe", "webstorm"]
+      title_suffixes: ["WebStorm"]
+      title_format: "pycharm"
+    
+    - name: "Sublime Text"
+      executable_names: ["sublime.exe", "sublime_text.exe", "sublime"]
+      title_suffixes: ["Sublime Text"]
+      title_format: "generic"
+    
+    - name: "Vim/Neovim"
+      executable_names: ["nvim.exe", "nvim", "vim.exe", "vim"]
+      title_suffixes: ["VIM", "nvim"]
+      title_format: "generic"
+    
+    - name: "Emacs"
+      executable_names: ["emacs.exe", "emacs"]
+      title_suffixes: ["Emacs"]
+      title_format: "generic"
+    
+    - name: "Atom"
+      executable_names: ["atom.exe", "atom"]
+      title_suffixes: ["Atom"]
+      title_format: "generic"
+
   # Project root markers to look for when resolving paths
   # Used by: ProjectDetector._get_project_path_from_pid()
   # Purpose: When walking up from an open file, stop at first directory containing a marker
@@ -424,6 +493,10 @@ ml_app_scoring:
     - vscode
     - visual studio code
     - code
+    - cursor
+    - cursor-linux
+    - cursor-win
+    - antigravity
     - pycharm
     - pycharmce
     - intellij
@@ -583,6 +656,9 @@ etl_pipeline:
   app_name_mapping:
     # IDEs & Editors
     code.exe: "VS Code"
+    cursor.exe: "Cursor"
+    cursor-win.exe: "Cursor"
+    antigravity.exe: "Antigravity"
     pycharm64.exe: "PyCharm"
     studio64.exe: "Android Studio"
     sublime.exe: "Sublime Text"
