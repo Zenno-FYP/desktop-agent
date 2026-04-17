@@ -267,6 +267,42 @@ class Database:
                 updated_at TEXT
             )
             """,
+
+            # ── Nudge Layer (Phase 5) ─────────────────────────────────────
+            """
+            CREATE TABLE IF NOT EXISTS nudge_log (
+                nudge_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                generated_at      TEXT    NOT NULL,
+                nudge_type        TEXT    NOT NULL,
+                nudge_text        TEXT    NOT NULL DEFAULT '',
+                rationale         TEXT,
+                fatigue_score     REAL,
+                fatigue_level     TEXT,
+                flow_ratio_today  REAL,
+                active_min_today  REAL,
+                min_since_break   REAL,
+                top_project       TEXT,
+                was_suppressed    INTEGER NOT NULL DEFAULT 0,
+                suppression_reason TEXT,
+                llm_used          INTEGER NOT NULL DEFAULT 0,
+                context_snapshot  TEXT
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_nudge_generated ON nudge_log(generated_at)",
+            "CREATE INDEX IF NOT EXISTS idx_nudge_suppressed ON nudge_log(was_suppressed, generated_at)",
+
+            # ── User preferences (onboarding answers, single row) ──────────────
+            """
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                id                      INTEGER PRIMARY KEY DEFAULT 1,
+                work_schedule           TEXT    DEFAULT 'standard',
+                focus_style             TEXT    DEFAULT 'moderate',
+                wellbeing_goal          TEXT    DEFAULT 'focused',
+                has_meetings            INTEGER DEFAULT 0,
+                onboarding_completed_at TEXT,
+                onboarding_version      INTEGER DEFAULT 1
+            )
+            """,
         ]
 
         with self._lock:
@@ -411,9 +447,8 @@ class Database:
         
         query += " ORDER BY start_time ASC"
         
-        with self._lock:
-            cursor = self.conn.execute(query, params)
-            rows = cursor.fetchall()
+        cursor = self.conn.execute(query, params)
+        rows = cursor.fetchall()
 
         # Return dicts keyed by column name (stable across schema changes)
         return [dict(row) for row in rows]
@@ -1221,25 +1256,24 @@ class Database:
 
     def get_local_user(self) -> dict | None:
         """Return the stored local user or None."""
-        with self._lock:
-            cur = self.conn.execute(
-                "SELECT backend_user_id, email, name, profile_photo, "
-                "is_verified, role, created_at, updated_at "
-                "FROM local_user WHERE id = 1"
-            )
-            row = cur.fetchone()
-            if not row:
-                return None
-            return {
-                '_id': row[0],
-                'email': row[1],
-                'name': row[2],
-                'profilePhoto': row[3],
-                'isVerified': bool(row[4]),
-                'role': row[5],
-                'createdAt': row[6],
-                'updatedAt': row[7],
-            }
+        cur = self.conn.execute(
+            "SELECT backend_user_id, email, name, profile_photo, "
+            "is_verified, role, created_at, updated_at "
+            "FROM local_user WHERE id = 1"
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            '_id': row[0],
+            'email': row[1],
+            'name': row[2],
+            'profilePhoto': row[3],
+            'isVerified': bool(row[4]),
+            'role': row[5],
+            'createdAt': row[6],
+            'updatedAt': row[7],
+        }
 
     def clear_local_user(self):
         """Delete the local user row (logout)."""
@@ -1249,6 +1283,63 @@ class Database:
 
     # ── Sync Operations (for activity sync to backend) ──────────────────
 
+    # ── User Preferences (onboarding) ────────────────────────────────────
+
+    def has_onboarding_completed(self) -> bool:
+        """Return True if the user has finished the onboarding flow."""
+        cur = self.conn.execute(
+            "SELECT onboarding_completed_at FROM user_preferences WHERE id = 1"
+        )
+        row = cur.fetchone()
+        return bool(row and row[0])
+
+    def get_user_preferences(self) -> dict | None:
+        """Return stored onboarding preferences as a dict, or None if not set."""
+        cur = self.conn.execute(
+            "SELECT work_schedule, focus_style, wellbeing_goal, has_meetings, "
+            "onboarding_completed_at, onboarding_version "
+            "FROM user_preferences WHERE id = 1"
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "work_schedule":           row[0],
+            "focus_style":             row[1],
+            "wellbeing_goal":          row[2],
+            "has_meetings":            bool(row[3]),
+            "onboarding_completed_at": row[4],
+            "onboarding_version":      row[5],
+        }
+
+    def upsert_user_preferences(
+        self,
+        work_schedule: str,
+        focus_style: str,
+        wellbeing_goal: str,
+        has_meetings: bool,
+        version: int = 1,
+    ) -> None:
+        """Insert or update the single user-preferences row."""
+        with self._lock:
+            with self.conn:
+                self.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO user_preferences
+                        (id, work_schedule, focus_style, wellbeing_goal,
+                         has_meetings, onboarding_completed_at, onboarding_version)
+                    VALUES (1, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        work_schedule,
+                        focus_style,
+                        wellbeing_goal,
+                        1 if has_meetings else 0,
+                        self._get_local_time_iso(),
+                        version,
+                    ),
+                )
+
     def has_pending_sync(self) -> bool:
         """Check if any aggregated table has pending sync data (needs_sync = 1).
         
@@ -1257,23 +1348,22 @@ class Database:
         Returns:
             True if any record has needs_sync = 1, False otherwise
         """
-        with self._lock:
-            # Check any aggregated table for pending data
-            cursor = self.conn.execute('''
-                SELECT 1 FROM daily_project_languages WHERE needs_sync = 1
-                UNION ALL
-                SELECT 1 FROM daily_project_apps WHERE needs_sync = 1
-                UNION ALL
-                SELECT 1 FROM project_skills WHERE needs_sync = 1
-                UNION ALL
-                SELECT 1 FROM daily_project_context WHERE needs_sync = 1
-                UNION ALL
-                SELECT 1 FROM daily_project_behavior WHERE needs_sync = 1
-                UNION ALL
-                SELECT 1 FROM project_loc_snapshots WHERE needs_sync = 1
-                LIMIT 1
-            ''')
-            return cursor.fetchone() is not None
+        # Pure SELECT — no lock needed; WAL mode allows concurrent readers
+        cursor = self.conn.execute('''
+            SELECT 1 FROM daily_project_languages WHERE needs_sync = 1
+            UNION ALL
+            SELECT 1 FROM daily_project_apps WHERE needs_sync = 1
+            UNION ALL
+            SELECT 1 FROM project_skills WHERE needs_sync = 1
+            UNION ALL
+            SELECT 1 FROM daily_project_context WHERE needs_sync = 1
+            UNION ALL
+            SELECT 1 FROM daily_project_behavior WHERE needs_sync = 1
+            UNION ALL
+            SELECT 1 FROM project_loc_snapshots WHERE needs_sync = 1
+            LIMIT 1
+        ''')
+        return cursor.fetchone() is not None
 
     def get_projects_pending_sync(self) -> list[str]:
         """Get list of project names with pending sync data (needs_sync = 1).
@@ -1281,14 +1371,13 @@ class Database:
         Returns:
             List of project names that have aggregates waiting to sync
         """
-        with self._lock:
-            cursor = self.conn.execute('''
-                SELECT DISTINCT project_name
-                FROM daily_project_languages
-                WHERE needs_sync = 1
-                ORDER BY project_name
-            ''')
-            return [row[0] for row in cursor.fetchall()]
+        cursor = self.conn.execute('''
+            SELECT DISTINCT project_name
+            FROM daily_project_languages
+            WHERE needs_sync = 1
+            ORDER BY project_name
+        ''')
+        return [row[0] for row in cursor.fetchall()]
 
     def mark_project_synced(self, project_name: str, date: str | None = None):
         """Mark aggregates as synced (needs_sync = 0) for a project.

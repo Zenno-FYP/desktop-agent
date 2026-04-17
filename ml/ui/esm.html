@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zenno — Context Check</title>
+  <style>
+    /* ── Reset & Variables ─────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0f0f13;
+      --surface:  #1a1a24;
+      --surface2: #22222e;
+      --border:   #2a2a3a;
+      --text:     #e8e8f0;
+      --muted:    #8888a0;
+      --accent:   #6c5ce7;
+      --radius:   12px;
+      --tr:       0.18s ease;
+
+      /* State colours */
+      --flow:    #00b894;
+      --debug:   #e17055;
+      --research:#0984e3;
+      --comms:   #6c5ce7;
+      --distract:#636e72;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      animation: fadeIn 0.25s ease both;
+    }
+
+    @keyframes fadeIn  { from { opacity: 0; transform: translateY(-30px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes fadeOut { from { opacity: 1; transform: translateY(0);     } to { opacity: 0; transform: translateY(-30px); } }
+    body.dismiss { animation: fadeOut 0.2s ease forwards; }
+
+    /* ── Top accent bar ────────────────────────────────────────── */
+    .top-bar {
+      height: 3px;
+      background: linear-gradient(90deg, var(--accent), #a78bfa);
+      flex-shrink: 0;
+    }
+
+    /* ── Card ──────────────────────────────────────────────────── */
+    .card {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 18px 20px 14px;
+      gap: 14px;
+      overflow: hidden;
+    }
+
+    /* ── Header ────────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .header-left { flex: 1; min-width: 0; }
+
+    .title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .zenno-badge {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: rgba(108,92,231,.12);
+      border: 1px solid rgba(108,92,231,.25);
+      border-radius: 4px;
+      padding: 2px 6px;
+    }
+
+    /* ── Prediction pill ───────────────────────────────────────── */
+    .prediction-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 6px;
+    }
+
+    .pred-label {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .pred-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 20px;
+      border: 1px solid;
+    }
+
+    .pred-pill .dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .conf-badge {
+      font-size: 11px;
+      color: var(--muted);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 7px;
+    }
+
+    /* ── Signals row ───────────────────────────────────────────── */
+    .signals {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .signal-chip {
+      font-size: 10px;
+      color: var(--muted);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 8px;
+      white-space: nowrap;
+    }
+
+    /* ── Instruction ───────────────────────────────────────────── */
+    .instruction {
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.2px;
+    }
+
+    /* ── Button grid ───────────────────────────────────────────── */
+    .btn-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      flex: 1;
+    }
+
+    .state-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      padding: 10px 6px;
+      border-radius: 9px;
+      border: 1.5px solid transparent;
+      background: var(--surface2);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background var(--tr), border-color var(--tr), transform var(--tr), box-shadow var(--tr);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .state-btn .state-icon { font-size: 18px; line-height: 1; }
+
+    .state-btn:hover {
+      background: var(--surface);
+      transform: translateY(-1px);
+    }
+
+    .state-btn:active { transform: scale(.97); }
+
+    /* Predicted state highlight */
+    .state-btn.predicted {
+      border-color: var(--btn-color, var(--accent));
+      background: color-mix(in srgb, var(--btn-color, var(--accent)) 12%, var(--surface2));
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--btn-color, var(--accent)) 30%, transparent);
+    }
+
+    .state-btn.predicted::after {
+      content: 'Detected';
+      position: absolute;
+      top: 4px; right: 4px;
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: var(--btn-color, var(--accent));
+      opacity: 0.85;
+    }
+
+    /* Colour per state */
+    .state-btn[data-state="Flow"]          { --btn-color: var(--flow); }
+    .state-btn[data-state="Debugging"]     { --btn-color: var(--debug); }
+    .state-btn[data-state="Research"]      { --btn-color: var(--research); }
+    .state-btn[data-state="Communication"] { --btn-color: var(--comms); }
+    .state-btn[data-state="Distracted"]    { --btn-color: var(--distract); }
+
+    .state-btn:hover {
+      border-color: var(--btn-color, var(--accent));
+      box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-color, var(--accent)) 20%, transparent);
+    }
+
+    .state-btn .state-name { line-height: 1; }
+
+    /* span the 4th+5th buttons across middle two of 3 cols */
+    .state-btn:nth-child(4) { grid-column: 1 / 2; }
+    .state-btn:nth-child(5) { grid-column: 2 / 4; }
+
+    /* ── Footer ────────────────────────────────────────────────── */
+    .footer {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding-top: 2px;
+    }
+
+    .progress-wrap {
+      flex: 1;
+      height: 2px;
+      background: rgba(255,255,255,.07);
+      border-radius: 1px;
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      height: 100%;
+      width: 100%;
+      background: linear-gradient(90deg, var(--accent), #a78bfa);
+      transform-origin: left;
+      animation: shrink var(--dismiss-ms, 30000ms) linear forwards;
+    }
+
+    @keyframes shrink { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
+    .footer-text {
+      font-size: 10px;
+      color: #444458;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="top-bar"></div>
+
+  <div class="card">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-left">
+        <div class="title">
+          <span>What were you doing?</span>
+          <span class="zenno-badge">ZENNO</span>
+        </div>
+        <div class="prediction-row">
+          <span class="pred-label">Detected:</span>
+          <span class="pred-pill" id="pred-pill">
+            <span class="dot"></span>
+            <span id="pred-state">—</span>
+          </span>
+          <span class="conf-badge" id="conf-badge">—%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Signal chips -->
+    <div class="signals" id="signals-row"></div>
+
+    <!-- Instruction -->
+    <div class="instruction">Is this correct? Tap to confirm or correct it.</div>
+
+    <!-- State buttons -->
+    <div class="btn-grid" id="btn-grid">
+      <button class="state-btn" data-state="Flow"          onclick="submit('Flow')">
+        <span class="state-icon">⚡</span>
+        <span class="state-name">Flow</span>
+      </button>
+      <button class="state-btn" data-state="Debugging"     onclick="submit('Debugging')">
+        <span class="state-icon">🔍</span>
+        <span class="state-name">Debugging</span>
+      </button>
+      <button class="state-btn" data-state="Research"      onclick="submit('Research')">
+        <span class="state-icon">📖</span>
+        <span class="state-name">Research</span>
+      </button>
+      <button class="state-btn" data-state="Distracted"    onclick="submit('Distracted')">
+        <span class="state-icon">💭</span>
+        <span class="state-name">Distracted</span>
+      </button>
+      <button class="state-btn" data-state="Communication" onclick="submit('Communication')">
+        <span class="state-icon">💬</span>
+        <span class="state-name">Communication</span>
+      </button>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <div class="progress-wrap">
+        <div class="progress-bar" id="progress"></div>
+      </div>
+      <span class="footer-text">Local only · auto-closes</span>
+    </div>
+  </div>
+
+  <script>
+    /* ── State colours (mirrors CSS vars) ───────────────────── */
+    const STATE_COLORS = {
+      Flow:          '#00b894',
+      Debugging:     '#e17055',
+      Research:      '#0984e3',
+      Communication: '#6c5ce7',
+      Distracted:    '#636e72',
+    };
+
+    /* ── Init — called from Python after page loads ─────────── */
+    function init(predictedState, confidencePct, signalChips, dismissMs) {
+      // Predicted pill
+      const color = STATE_COLORS[predictedState] || '#6c5ce7';
+      const pill  = document.getElementById('pred-pill');
+      pill.style.color       = color;
+      pill.style.borderColor = color + '55';
+      pill.style.background  = color + '18';
+      document.getElementById('pred-state').textContent   = predictedState;
+      document.getElementById('conf-badge').textContent   = confidencePct + '%';
+
+      // Highlight predicted button
+      document.querySelectorAll('.state-btn').forEach(btn => {
+        if (btn.dataset.state === predictedState) btn.classList.add('predicted');
+      });
+
+      // Signal chips
+      const row = document.getElementById('signals-row');
+      (signalChips || []).forEach(chip => {
+        const el = document.createElement('span');
+        el.className = 'signal-chip';
+        el.textContent = chip;
+        row.appendChild(el);
+      });
+
+      // Progress bar timer
+      document.getElementById('progress').style.setProperty('--dismiss-ms', dismissMs + 'ms');
+      setTimeout(autoDismiss, dismissMs);
+    }
+
+    /* ── Submit choice ──────────────────────────────────────── */
+    function submit(label) {
+      document.body.classList.add('dismiss');
+      setTimeout(() => {
+        try { window.pywebview.api.submit(label); } catch (e) {}
+      }, 220);
+    }
+
+    /* ── Auto-dismiss (no answer) ───────────────────────────── */
+    function autoDismiss() {
+      document.body.classList.add('dismiss');
+      setTimeout(() => {
+        try { window.pywebview.api.submit(null); } catch (e) {}
+      }, 220);
+    }
+  </script>
+</body>
+</html>
