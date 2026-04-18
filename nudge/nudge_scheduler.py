@@ -26,7 +26,7 @@ class NudgeScheduler:
     Pipeline (per tick):
       1. Suppression checks (idle, too-recent, communication state)
       2. NudgeContextAggregator  → NudgeContext
-      3. NudgeGenerator          → nudge_text  (Gemini or fallback)
+      3. NudgeGenerator          → nudge_text  (Zenno NLP API or fallback)
       4. NudgeNotifier            → show toast
       5. NudgeLog                 → record to DB
     """
@@ -38,7 +38,7 @@ class NudgeScheduler:
         suppression_min: int = 25,
         window_min: int = 30,
         llm_enabled: bool = True,
-        llm_timeout_sec: float = 4.0,
+        llm_timeout_sec: float = 8.0,
         notification_enabled: bool = True,
         notification_display_sec: int = 7,
         min_active_min: float = 15.0,

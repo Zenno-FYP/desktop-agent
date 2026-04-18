@@ -1018,8 +1018,7 @@ nudge:
 
   llm:
     enabled: true                     # Set false to always use fallback templates
-    model: "gemini-2.0-flash"         # Gemini model name (uses GEMINI_API_KEY from .env)
-    timeout_sec: 4.0                  # Max seconds to wait for LLM response
+    timeout_sec: 8.0                  # Max seconds to wait for nudge NLP API (overridden by NUDGE_API_TIMEOUT in .env)
 
   notification:
     enabled: true                     # Show desktop notification window

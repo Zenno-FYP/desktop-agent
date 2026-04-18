@@ -143,7 +143,7 @@ class UserPreferences:
 
     @property
     def llm_persona_instruction(self) -> str:
-        """Sentence appended to the Gemini system prompt to tune the voice."""
+        """Extra instruction passed to the nudge NLP API to tune the voice."""
         return _PERSONA.get(self.wellbeing_goal, "")
 
     # ── Serialisation ──────────────────────────────────────────────────────
