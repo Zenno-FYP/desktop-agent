@@ -1,6 +1,7 @@
 """
 Zenno Desktop Agent - Entry Point (Phase 1: Core Activity Detection)
 """
+import os
 import time
 import logging
 import threading
@@ -235,6 +236,12 @@ class DesktopAgent:
         if nudge_cfg.get("enabled", True):
             llm_cfg  = nudge_cfg.get("llm", {}) or {}
             notif_cfg = nudge_cfg.get("notification", {}) or {}
+            _nudge_timeout_env = os.getenv("NUDGE_API_TIMEOUT", "").strip()
+            _llm_timeout_sec = (
+                float(_nudge_timeout_env)
+                if _nudge_timeout_env
+                else float(llm_cfg.get("timeout_sec", 8.0))
+            )
             self.nudge_scheduler = NudgeScheduler(
                 db_path=self.db_path,
                 interval_min=int(nudge_cfg.get("interval_min", 30)),
@@ -248,7 +255,7 @@ class DesktopAgent:
                 distraction_threshold=float(nudge_cfg.get("distraction_threshold", 0.30)),
                 meeting_suppression_threshold=float(nudge_cfg.get("meeting_suppression_threshold", 0.80)),
                 llm_enabled=bool(llm_cfg.get("enabled", True)),
-                llm_timeout_sec=float(llm_cfg.get("timeout_sec", 4.0)),
+                llm_timeout_sec=_llm_timeout_sec,
                 notification_enabled=bool(notif_cfg.get("enabled", True)),
                 notification_display_sec=int(notif_cfg.get("display_sec", 7)),
                 # User preferences override config defaults where applicable

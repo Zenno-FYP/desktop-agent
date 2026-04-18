@@ -1,9 +1,10 @@
-"""NudgeGenerator — Gemini LLM call with fallback template library."""
+"""NudgeGenerator — custom NLP API (Zenno nudge service) with fallback template library."""
 import os
 import random
 import logging
 import requests
 from pathlib import Path
+from typing import Optional
 from dotenv import load_dotenv
 
 from nudge.nudge_context import NudgeContext
@@ -12,12 +13,14 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 logger = logging.getLogger(__name__)
 
-# Cache the API key once at import time so the missing-key warning fires at most
-# once per process instead of on every nudge attempt.
-_GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
-if not _GEMINI_API_KEY:
+_NUDGE_API_URL: str = os.getenv("NUDGE_API_URL", "http://localhost:8000").rstrip("/")
+_NUDGE_API_SECRET: str = os.getenv("NUDGE_API_SECRET", "")
+
+_warned_once: bool = False
+
+if not _NUDGE_API_URL:
     logger.warning(
-        "[NudgeGenerator] GEMINI_API_KEY not set — nudges will use local fallback templates"
+        "[NudgeGenerator] NUDGE_API_URL is empty — nudges will use local fallback templates"
     )
 
 # ── Fallback Template Library ──────────────────────────────────────────────────
@@ -81,121 +84,92 @@ def _fallback(ctx: NudgeContext) -> str:
     return _render_template(random.choice(templates), ctx)
 
 
-# ── Gemini API Call ────────────────────────────────────────────────────────────
+# ── Zenno NLP API ─────────────────────────────────────────────────────────────
 
-_GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
-)
+def _call_nudge_api(ctx: NudgeContext, persona: str, timeout_sec: float) -> Optional[str]:
+    """POST /generate on the nudge service; return text or None on failure."""
+    global _warned_once
 
-def _build_system_prompt(nudge_type: str, persona: str = "") -> str:
-    """Build an imperative system prompt that binds the model to a specific nudge type.
+    if not _NUDGE_API_URL:
+        return None
 
-    Design 7 fix: the nudge type is a directive, not just context, so the model
-    cannot slide into a different type when the context contains mixed signals.
-    """
-    # Human-readable label and an explicit anti-example to anchor the boundary
-    _type_guidance: dict[str, str] = {
-        "BREAK_REMINDER":   "Tell the developer to take a break. Do NOT celebrate focus or productivity.",
-        "FLOW_CELEBRATION": "Celebrate unbroken focus. Do NOT suggest breaks or mention fatigue.",
-        "FATIGUE_WARNING":  "Warn about signs of mental fatigue. Do NOT praise output volume.",
-        "REENGAGEMENT":     "Gently redirect a distracted developer back to their work.",
-        "MOTIVATION":       "Give a short motivating observation. Do NOT lecture or warn.",
-        "ACHIEVEMENT":      "Celebrate a specific accomplishment for today. Keep it brief and genuine.",
-        "LATE_NIGHT":       "Acknowledge the late hour with warmth. Do NOT be preachy about sleep.",
-    }
-    type_instruction = _type_guidance.get(
-        nudge_type,
-        f"Generate a nudge of type {nudge_type}.",
-    )
-    persona_line = f"\nContext about this developer: {persona}" if persona else ""
-    return (
-        f"You are a friendly engineering coach inside Zenno, a developer productivity tool.\n"
-        f"Generate exactly ONE nudge of type {nudge_type}.\n"
-        f"{type_instruction}{persona_line}\n"
-        f"≤ 2 sentences, ≤ 25 words total. Sound like a smart colleague, not a wellness bot.\n"
-        f"Use specific numbers when they add weight (e.g. '47 minutes of Flow').\n"
-        f"Output ONLY the nudge text, nothing else."
-    )
-
-
-def _build_user_prompt(ctx: NudgeContext) -> str:
-    dominant_window_state = (
-        max(ctx.context_last_window.items(), key=lambda x: x[1])[0]
-        if ctx.context_last_window
-        else "Unknown"
-    )
-    flow_pct = ctx.context_today.get("Flow", 0.0) * 100
-
-    return (
-        f"Developer snapshot:\n"
-        f"- Active today: {ctx.total_active_min_today:.0f} min\n"
-        f"- Time since last break: {ctx.min_since_last_break:.0f} min\n"
-        f"- Flow this session: {flow_pct:.0f}%\n"
-        f"- Current state: {dominant_window_state}\n"
-        f"- Fatigue level: {ctx.fatigue_level}\n"
-        f"- Top project: {ctx.top_project_today or 'unknown'}\n"
-        f"- Working late: {ctx.is_working_late}\n"
-        f"- Nudge type needed: {ctx.recommended_nudge_type}\n"
-        f"- Rationale: {ctx.nudge_rationale}\n\n"
-        f"Generate the nudge."
-    )
-
-
-def _call_gemini(ctx: NudgeContext, timeout_sec: float = 4.0, persona: str = "") -> str | None:
-    """Call Gemini Flash and return nudge text, or None on error."""
-    if not _GEMINI_API_KEY:
-        return None  # Warning already emitted once at import time
+    context_last_window: dict = ctx.context_last_window or {}
+    if context_last_window:
+        current_state = max(context_last_window, key=context_last_window.get)
+    else:
+        current_state = "Unknown"
 
     payload = {
-        "system_instruction": {"parts": [{"text": _build_system_prompt(ctx.recommended_nudge_type, persona)}]},
-        "contents": [{"parts": [{"text": _build_user_prompt(ctx)}]}],
-        "generationConfig": {
-            "maxOutputTokens": 80,
-            "temperature": 0.8,
-            "topP": 0.95,
-        },
+        "nudge_type": ctx.recommended_nudge_type,
+        "fatigue_level": ctx.fatigue_level,
+        "min_since_last_break": float(ctx.min_since_last_break),
+        "consecutive_flow_min": float(ctx.consecutive_flow_min),
+        "flow_pct": float((ctx.context_today or {}).get("Flow", 0.0) * 100),
+        "current_state": current_state,
+        "active_min": float(ctx.total_active_min_today),
+        "top_project": ctx.top_project_today or "your project",
+        "persona": persona or "",
     }
+
+    headers: dict[str, str] = {}
+    if _NUDGE_API_SECRET:
+        headers["x-api-key"] = _NUDGE_API_SECRET
 
     try:
         resp = requests.post(
-            _GEMINI_URL,
-            params={"key": _GEMINI_API_KEY},
+            f"{_NUDGE_API_URL}/generate",
             json=payload,
+            headers=headers,
             timeout=timeout_sec,
         )
         resp.raise_for_status()
         data = resp.json()
-        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        if text:
-            logger.info("[NudgeGenerator] Gemini generated: %s", text)
-            return text
+        text = data.get("nudge_text", "").strip()
+        if not text:
+            logger.warning("[NudgeGenerator] Nudge API returned empty nudge_text")
+            return None
+        logger.info("[NudgeGenerator] NLP API generated: %s", text)
+        return text
     except requests.exceptions.Timeout:
-        logger.warning("[NudgeGenerator] Gemini timeout — using fallback")
+        if not _warned_once:
+            logger.warning(
+                "[NudgeGenerator] Nudge API timed out after %.1fs — using fallback templates. "
+                "(This warning will not repeat.)",
+                timeout_sec,
+            )
+            _warned_once = True
+        return None
+    except requests.exceptions.ConnectionError:
+        if not _warned_once:
+            logger.warning(
+                "[NudgeGenerator] Nudge API unreachable at %s — using fallback templates. "
+                "(This warning will not repeat.)",
+                _NUDGE_API_URL,
+            )
+            _warned_once = True
+        return None
     except Exception:
-        logger.exception("[NudgeGenerator] Gemini call failed — using fallback")
-
-    return None
+        logger.exception("[NudgeGenerator] Nudge API call failed — using fallback")
+        return None
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 class NudgeGenerator:
-    """Generate nudge text using Gemini with graceful fallback to templates."""
+    """Generate nudge text via the Zenno NLP service, with graceful template fallback."""
 
-    def __init__(self, llm_enabled: bool = True, llm_timeout_sec: float = 4.0):
+    def __init__(self, llm_enabled: bool = True, llm_timeout_sec: float = 8.0):
         self.llm_enabled = llm_enabled
         self.llm_timeout_sec = llm_timeout_sec
 
     def generate(self, ctx: NudgeContext, persona: str = "") -> tuple[str, bool]:
         """Return (nudge_text, llm_used).
 
-        persona: optional extra instruction appended to the Gemini system prompt
-                 (set from UserPreferences.llm_persona_instruction).
-        Tries Gemini first; falls back to template on any failure.
+        persona: optional instruction from UserPreferences (wellbeing goal voice).
+        Tries the nudge API first; falls back to templates on any failure.
         """
         if self.llm_enabled:
-            text = _call_gemini(ctx, timeout_sec=self.llm_timeout_sec, persona=persona)
+            text = _call_nudge_api(ctx, persona, timeout_sec=self.llm_timeout_sec)
             if text:
                 return text, True
 
