@@ -2,6 +2,7 @@
 Zenno Desktop Agent - Entry Point (Phase 1: Core Activity Detection)
 """
 import os
+import signal
 import time
 import logging
 import threading
@@ -291,7 +292,12 @@ class DesktopAgent:
 
         # Event used for interruptible sleep and clean shutdown signalling
         self._stop_event = threading.Event()
-        
+        # Background worker threads we spawn (LOC scan, ETL/sync) — tracked
+        # so _shutdown() can join them with a timeout instead of leaking
+        # daemon threads on exit.
+        self._workers: list[threading.Thread] = []
+        self._workers_lock = threading.Lock()
+
         self.last_flush_time = time.time()
 
     def _setup_logging(self):
@@ -314,9 +320,30 @@ class DesktopAgent:
 
         logging.basicConfig(level=log_level, format=log_format, handlers=handlers)
 
+    def _install_signal_handlers(self) -> None:
+        """Install SIGINT/SIGTERM handlers so service-managed agents shut
+        down cleanly when stopped by systemd, NSSM, Docker, etc.
+
+        Falls back to KeyboardInterrupt-only handling on platforms where
+        signal.signal cannot register from non-main threads.
+        """
+        def _handle(signum, _frame):
+            self.logger.info("[Agent] Received signal %s — initiating shutdown", signum)
+            self._stop_event.set()
+
+        try:
+            signal.signal(signal.SIGINT, _handle)
+            signal.signal(signal.SIGTERM, _handle)
+        except (ValueError, AttributeError):
+            # SIGTERM unavailable on Windows for some Python builds, or we
+            # are not in the main thread — KeyboardInterrupt path still works.
+            pass
+
     def start(self):
         """Start the monitoring loop."""
         self.logger.info("[Agent] Starting desktop activity monitoring...")
+
+        self._install_signal_handlers()
 
         # Start global keyboard/mouse listeners once.
         self.metrics.start_listening()
@@ -330,7 +357,7 @@ class DesktopAgent:
         self.preferences_poller.start()
         
         try:
-            while True:
+            while not self._stop_event.is_set():
               try:
                 # Get active window
                 app_name, window_title, pid = get_active_window()
@@ -403,9 +430,10 @@ class DesktopAgent:
               # Interruptible sleep outside the inner try so it always runs,
               # and so KeyboardInterrupt is never swallowed by the inner handler.
               self._stop_event.wait(self.sample_interval)
-        
+
         except KeyboardInterrupt:
             self.logger.info("[Agent] Shutdown signal received...")
+        finally:
             self._shutdown()
 
     def _recover_sticky_project(self):
@@ -552,6 +580,14 @@ class DesktopAgent:
         except Exception as e:
             self.logger.exception("[Error] Failed to flush session")
 
+    def _spawn_worker(self, target, name: str) -> None:
+        """Spawn a daemon worker thread and remember it so _shutdown can join."""
+        t = threading.Thread(target=target, daemon=True, name=name)
+        with self._workers_lock:
+            self._workers = [w for w in self._workers if w.is_alive()]
+            self._workers.append(t)
+        t.start()
+
     def _check_idle_and_scan_loc_async(self):
         """Fire a background thread for LOC scanning if the interval has elapsed.
 
@@ -562,7 +598,7 @@ class DesktopAgent:
         if current_time - self.last_loc_scan_time < self.loc_scan_interval_sec:
             return
         self.last_loc_scan_time = current_time
-        threading.Thread(target=self._loc_scan_worker, daemon=True, name="LOCScan").start()
+        self._spawn_worker(self._loc_scan_worker, "LOCScan")
 
     def _loc_scan_worker(self):
         """Worker: scan LOC for all active projects (runs in its own thread)."""
@@ -582,7 +618,7 @@ class DesktopAgent:
         if current_time - self.last_etl_time < self.etl_interval_sec:
             return
         self.last_etl_time = current_time
-        threading.Thread(target=self._etl_and_sync_worker, daemon=True, name="ETLSync").start()
+        self._spawn_worker(self._etl_and_sync_worker, "ETLSync")
 
     def _etl_and_sync_worker(self):
         """Worker: run ETL aggregation then sync pending data (runs in its own thread)."""
@@ -604,42 +640,102 @@ class DesktopAgent:
             self.logger.exception("[Error] ETL/Sync cycle failed")
 
     def _shutdown(self):
-        """Graceful shutdown."""
+        """Graceful shutdown.
+
+        Idempotent: safe to call from both the signal handler and the
+        main-loop `finally:` block.
+        """
+        if getattr(self, "_shutdown_complete", False):
+            return
+        self._shutdown_complete = True
+
         self.logger.info("[Agent] Shutting down...")
         # Wake the main loop immediately so it exits without waiting for sleep to expire
         self._stop_event.set()
-        
-        # Stop background block evaluator
-        self.block_evaluator.stop()
 
-        # Stop nudge scheduler, syncer, and preferences poller
+        # Stop background block evaluator (legacy: no per-thread join)
+        try:
+            self.block_evaluator.stop()
+        except Exception:
+            self.logger.exception("[Agent] block_evaluator.stop failed")
+
+        # Signal cooperative shutdown on long-running services
         if self.nudge_scheduler:
-            self.nudge_scheduler.stop()
-        self.nudge_syncer.stop()
-        self.preferences_poller.stop()
-        
+            try:
+                self.nudge_scheduler.stop()
+            except Exception:
+                self.logger.exception("[Agent] nudge_scheduler.stop failed")
+        try:
+            self.nudge_syncer.stop()
+        except Exception:
+            self.logger.exception("[Agent] nudge_syncer.stop failed")
+        try:
+            self.preferences_poller.stop()
+        except Exception:
+            self.logger.exception("[Agent] preferences_poller.stop failed")
+
+        # Join cooperatively-stopped service threads with a bounded timeout so
+        # a stuck network call cannot hang the agent forever on shutdown.
+        # Each is a daemon so the process can still exit if the join times out.
+        SHUTDOWN_JOIN_SEC = 5.0
+        for service_name in ("nudge_scheduler", "nudge_syncer", "preferences_poller"):
+            svc = getattr(self, service_name, None)
+            thread = getattr(svc, "_thread", None) if svc else None
+            if thread and thread.is_alive():
+                self.logger.debug("[Agent] Joining %s (timeout=%.1fs)", service_name, SHUTDOWN_JOIN_SEC)
+                thread.join(timeout=SHUTDOWN_JOIN_SEC)
+                if thread.is_alive():
+                    self.logger.warning(
+                        "[Agent] %s did not exit within %.1fs — leaving as daemon",
+                        service_name,
+                        SHUTDOWN_JOIN_SEC,
+                    )
+
+        # Join any in-flight LOC/ETL workers so a late-arriving DB write
+        # does not race with `db.close()` below.
+        with self._workers_lock:
+            workers = list(self._workers)
+        for w in workers:
+            if w.is_alive():
+                self.logger.debug("[Agent] Joining worker %s (timeout=%.1fs)", w.name, SHUTDOWN_JOIN_SEC)
+                w.join(timeout=SHUTDOWN_JOIN_SEC)
+                if w.is_alive():
+                    self.logger.warning(
+                        "[Agent] Worker %s did not exit within %.1fs",
+                        w.name,
+                        SHUTDOWN_JOIN_SEC,
+                    )
+
         # Flush final session
         if self.current_session:
-            self._flush_session()
-        
+            try:
+                self._flush_session()
+            except Exception:
+                self.logger.exception("[Agent] Final session flush failed")
+
         # Final ETL if needed
         try:
             self.logger.info("[Agent] Running final ETL before shutdown...")
             self.etl_pipeline.run()
-            
-            # Final sync if pending data exists
+
             if self.db.has_pending_sync():
                 self.logger.info("[Agent] Syncing pending data before shutdown...")
                 self.activity_syncer.sync_activity()
         except Exception as e:
             self.logger.warning(f"[Agent] Final ETL/sync failed: {e}")
 
-        # Stop global listeners.
-        self.metrics.stop_listening()
-        
-        # Close database
-        self.db.close()
-        self.logger.info("[Agent] Database closed")
+        # Stop global listeners (this internally joins the MouseMovementSampler).
+        try:
+            self.metrics.stop_listening()
+        except Exception:
+            self.logger.exception("[Agent] metrics.stop_listening failed")
+
+        try:
+            self.db.close()
+            self.logger.info("[Agent] Database closed")
+        except Exception:
+            self.logger.exception("[Agent] db.close failed")
+
         self.logger.info("[Agent] Stopped")
 
 

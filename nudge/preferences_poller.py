@@ -104,11 +104,6 @@ class PreferencesPoller:
                     remote.wellbeing_goal, remote.nudge_enabled,
                     remote.notification_sound,
                 )
-                logger.info(
-                    "[PreferencesPoller] Preferences updated: nudge_enabled=%s sound=%s",
-                    remote.nudge_enabled,
-                    remote.notification_sound,
-                )
                 if self._on_change:
                     try:
                         self._on_change(remote)
@@ -150,7 +145,11 @@ class PreferencesPoller:
             if row:
                 return UserPreferences.from_row(row)
         except Exception:
-            pass
+            # Don't silently swallow — when the local DB is unreadable we want
+            # operators to see WHY (locked, schema drift, missing column …).
+            # Returning None falls back to "treat remote as new", which is the
+            # safe default.
+            logger.exception("[PreferencesPoller] Failed to read local preferences")
         return None
 
     def _save_local(self, prefs: UserPreferences) -> None:

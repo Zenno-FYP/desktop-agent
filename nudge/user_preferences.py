@@ -23,7 +23,12 @@ _LATE_NIGHT: dict[str, int] = {
     "morning":   15,
     "standard":  19,
     "evening":   21,
-    "night_owl": 23,
+    # For a true night owl, "late night" by their schedule starts ~3am — but
+    # the comparison is `hour >= late_night_hour` (no wrap), so any value
+    # less than the work-end hour would falsely fire all afternoon/evening.
+    # Setting it to 25 effectively disables LATE_NIGHT for this preset until
+    # we add an override on the website.
+    "night_owl": 25,
 }
 
 # (quiet_from_hour, quiet_until_hour)
@@ -34,7 +39,10 @@ _QUIET_WINDOW: dict[str, tuple[int, int]] = {
     "morning":   (16, 6),
     "standard":  (20, 8),
     "evening":   (22, 11),
-    "night_owl": (1,  14),
+    # Previously (1, 14) only gave 11 working hours and cut the user off at
+    # 1am. A real night owl typically works ~1pm–3am, so quiet 3am–1pm gives
+    # 14 productive hours including post-midnight focus blocks.
+    "night_owl": (3,  13),
 }
 
 _BREAK_REMINDER: dict[str, int] = {
@@ -61,6 +69,15 @@ _DISABLED_TYPES: dict[str, list[str]] = {
     "burnout":  [],
     "habits":   [],
     "minimal":  ["REENGAGEMENT", "MOTIVATION"],
+}
+
+# Per-goal "Communication ratio" threshold for the in-meeting suppression
+# guard. See UserPreferences.meeting_suppression_threshold for the contract.
+_MEETING_SUPPRESSION_THRESHOLD: dict[str, float] = {
+    "focused":  0.80,
+    "burnout":  0.60,
+    "habits":   0.80,
+    "minimal":  0.65,
 }
 
 _PERSONA: dict[str, str] = {
@@ -128,8 +145,17 @@ class UserPreferences:
 
     @property
     def meeting_suppression_threshold(self) -> float:
-        """Communication ratio above which nudges are suppressed (in-meeting guard)."""
-        return 0.80
+        """Communication ratio above which nudges are suppressed (in-meeting guard).
+
+        Tuned per `wellbeing_goal`:
+        - `burnout`: a lower bar (0.60) so the agent stays out of the way more
+          often during meeting-heavy days.
+        - `minimal`: also lower (0.65) — the user explicitly asked for fewer
+          nudges, and meetings should err on the silent side.
+        - default `focused` / `habits`: 0.80 — only suppress when the window
+          is dominated by Communication.
+        """
+        return _MEETING_SUPPRESSION_THRESHOLD.get(self.wellbeing_goal, 0.80)
 
     @property
     def nudge_interval_override_min(self) -> int | None:

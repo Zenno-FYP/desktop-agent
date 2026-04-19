@@ -100,7 +100,16 @@ class NudgeScheduler:
             llm_enabled=llm_enabled,
             llm_timeout_sec=llm_timeout_sec,
         )
-        self.notifier = NudgeNotifier(display_sec=notification_display_sec) if notification_enabled else None
+        # Pass nudge_log so the notifier can record `display_failed`
+        # suppressions when the subprocess fails to launch.
+        self.notifier = (
+            NudgeNotifier(
+                display_sec=notification_display_sec,
+                nudge_log=self.nudge_log,
+            )
+            if notification_enabled
+            else None
+        )
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -212,7 +221,17 @@ class NudgeScheduler:
         try:
             ctx = aggregator.aggregate()
         except Exception:
+            # Record the suppression so the website's Zenno Agent stats page can
+            # surface this as "Aggregation failures" — otherwise the tick is
+            # invisible and we never learn that the desktop DB is corrupt or
+            # the schema migrated unexpectedly.
             logger.exception("[NudgeScheduler] Aggregation failed — skipping tick")
+            try:
+                self.nudge_log.record_suppressed("aggregation_failed")
+            except Exception:
+                logger.exception(
+                    "[NudgeScheduler] Failed to record aggregation_failed suppression"
+                )
             return
 
         # ── Suppression: not enough data yet ──────────────────────────────

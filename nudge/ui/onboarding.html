@@ -369,37 +369,23 @@
       </div>
     </div>
 
-    <!-- Step 4: Meetings -->
+    <!-- Step 4: Summary (the meetings question was removed; meeting suppression
+         is now driven by the Communication context detector + the
+         meeting_suppression_threshold config) -->
     <div class="step" id="step-4">
-      <div class="q-number">Question 4 of 4</div>
-      <div class="q-text">Do you have regular meetings or standups during the day?</div>
-      <div class="options two-col" id="opts-meetings">
-        <div class="option" data-val="1" onclick="select(this,'meetings')">
-          <div class="radio"><div class="radio-dot"></div></div>
-          <div class="option-text">
-            <div class="option-label">Yes, several</div>
-            <div class="option-sub">Standups, reviews, etc.</div>
-          </div>
-        </div>
-        <div class="option selected" data-val="0" onclick="select(this,'meetings')">
-          <div class="radio"><div class="radio-dot"></div></div>
-          <div class="option-text">
-            <div class="option-label">Mostly async</div>
-            <div class="option-sub">Solo / remote work</div>
-          </div>
-        </div>
-      </div>
+      <div class="q-number">Almost done</div>
+      <div class="q-text">Review your setup</div>
 
       <!-- Summary preview (shown on step 4) -->
       <div id="summary" style="
         margin-top: 18px;
-        padding: 12px 14px;
+        padding: 14px 16px;
         background: var(--bg);
         border: 1px solid var(--border);
         border-radius: 8px;
-        font-size: 12px;
+        font-size: 13px;
         color: var(--muted);
-        line-height: 1.7;
+        line-height: 1.8;
       ">
         <span id="sum-text"></span>
       </div>
@@ -421,7 +407,6 @@
     schedule: 'standard',
     focus:    'moderate',
     goal:     'focused',
-    meetings: 0,
   };
 
   const totalSteps = 4;
@@ -434,7 +419,6 @@
     if      (group === 'schedule') state.schedule = val;
     else if (group === 'focus')    state.focus    = val;
     else if (group === 'goal')     state.goal     = val;
-    else if (group === 'meetings') state.meetings = parseInt(val, 10);
     if (state.step === 4) updateSummary();
   }
 
@@ -492,8 +476,7 @@
     window.pywebview.api.submit(
       state.schedule,
       state.focus,
-      state.goal,
-      state.meetings
+      state.goal
     );
   }
 
@@ -524,7 +507,6 @@
       '🕐 ' + (SCHEDULE_LABELS[state.schedule] || state.schedule),
       '⚡ ' + (FOCUS_LABELS[state.focus]    || state.focus),
       '🎯 ' + (GOAL_LABELS[state.goal]      || state.goal),
-      '📅 ' + (state.meetings ? 'Regular meetings' : 'Mostly async'),
     ];
     document.getElementById('sum-text').innerHTML = lines.join('<br>');
   }

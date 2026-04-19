@@ -19,8 +19,11 @@ Flow:
 4. LOAD: Execute all SQL commands in ONE atomic transaction
 """
 
+import logging
 from datetime import datetime, time, timedelta
 from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 
 
 class ETLPipeline:
@@ -325,10 +328,12 @@ class ETLPipeline:
                         [now] + log_ids,
                     )
 
-                print(
-                    f"[ETLPipeline] Processed {len(log_ids)} raw logs → {len(sql_commands)} UPSERT commands executed"
+                logger.info(
+                    "[ETLPipeline] Processed %d raw logs → %d UPSERT commands executed",
+                    len(log_ids),
+                    len(sql_commands),
                 )
 
-        except Exception as e:
-            print(f"[ETLPipeline] Error executing batch: {e}")
+        except Exception:
+            logger.exception("[ETLPipeline] Error executing batch")
             raise

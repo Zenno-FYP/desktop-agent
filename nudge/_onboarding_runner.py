@@ -51,8 +51,14 @@ class OnboardingBridge:
         self._window = window
 
     def submit(self, work_schedule: str, focus_style: str,
-               wellbeing_goal: str, has_meetings: int = 0) -> None:
-        """Called by JS when the user completes the last step."""
+               wellbeing_goal: str) -> None:
+        """Called by JS when the user completes the last step.
+
+        Note: an earlier revision accepted a `has_meetings` argument, but the
+        wellbeing_goal field already covers the same intent and the meeting
+        suppression threshold is now driven from
+        `nudge/user_preferences.py::meeting_suppression_threshold`.
+        """
         _result.update({
             "work_schedule":  work_schedule,
             "focus_style":    focus_style,

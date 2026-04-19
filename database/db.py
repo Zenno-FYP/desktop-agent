@@ -143,6 +143,7 @@ class Database:
 
                 typing_intensity REAL DEFAULT 0.0,
                 mouse_click_rate REAL DEFAULT 0.0,
+                mouse_scroll_events INTEGER DEFAULT 0,
                 deletion_key_presses INTEGER DEFAULT 0,
                 mouse_movement_distance REAL NOT NULL DEFAULT 0.0,
                 idle_duration_sec INTEGER DEFAULT 0,
@@ -327,6 +328,8 @@ class Database:
             "ALTER TABLE daily_project_behavior ADD COLUMN total_keystrokes REAL NOT NULL DEFAULT 0.0",
             "ALTER TABLE daily_project_behavior ADD COLUMN total_duration_min REAL NOT NULL DEFAULT 0.0",
             "ALTER TABLE daily_project_behavior ADD COLUMN total_clicks REAL NOT NULL DEFAULT 0.0",
+            # Mouse-wheel scroll events captured per raw activity log
+            "ALTER TABLE raw_activity_logs ADD COLUMN mouse_scroll_events INTEGER DEFAULT 0",
         ]
         with self._lock:
             with self.conn:
@@ -364,6 +367,7 @@ class Database:
             'detected_language': activity_data.get('detected_language'),
             'typing_intensity': activity_data.get('typing_intensity', 0.0),
             'mouse_click_rate': activity_data.get('mouse_click_rate', 0.0),
+            'mouse_scroll_events': activity_data.get('mouse_scroll_events', 0),
             'deletion_key_presses': activity_data.get('deletion_key_presses', 0),
             'mouse_movement_distance': activity_data.get('mouse_movement_distance', 0.0),
             'idle_duration_sec': activity_data.get('idle_duration_sec', 0),
@@ -377,10 +381,11 @@ class Database:
                 INSERT INTO raw_activity_logs (
                     start_time, end_time, app_name, window_title, duration_sec,
                     project_name, project_path, active_file, detected_language,
-                    typing_intensity, mouse_click_rate, deletion_key_presses, mouse_movement_distance, idle_duration_sec,
+                    typing_intensity, mouse_click_rate, mouse_scroll_events,
+                    deletion_key_presses, mouse_movement_distance, idle_duration_sec,
                     context_state, confidence_score
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 tuple(fields.values())
             )

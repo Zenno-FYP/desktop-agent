@@ -27,39 +27,41 @@ if not _NUDGE_API_URL:
 
 FALLBACK_TEMPLATES: dict[str, list[str]] = {
     "BREAK_REMINDER": [
-        "You've been at it for {min_since_break:.0f} minutes. Step away, even for 5.",
-        "No breaks in {min_since_break:.0f} min — your brain needs a reset.",
-        "{min_since_break:.0f} minutes straight. A short walk goes a long way.",
+        "You've been heads-down for {min_since_break:.0f} minutes — step away, even just for five.",
+        "Your brain has been running hard on {top_project}. A quick break now makes the next hour better.",
+        "{min_since_break:.0f} minutes is a solid stretch. Walk away for a bit — {top_project} will still be there.",
+        "I know you're in it, but {min_since_break:.0f} minutes is a good cue to give yourself a real pause.",
     ],
     "FLOW_CELEBRATION": [
-        "You've been in Flow for {consecutive_flow_min:.0f} minutes. Don't stop.",
-        "{consecutive_flow_min:.0f} minutes of pure focus — that's rare. Keep it up.",
-        "Deep work streak: {consecutive_flow_min:.0f} min. You're in it.",
+        "You're locked in — {consecutive_flow_min:.0f} minutes of pure focus on {top_project}. Don't stop.",
+        "{consecutive_flow_min:.0f} unbroken minutes on {top_project}. That's genuinely rare — keep riding it.",
+        "Whatever you're doing on {top_project}, it's working. Stay in it.",
     ],
     "REENGAGEMENT": [
-        "Scattered last hour. Pick one thing and start there.",
-        "Hard to focus? Close everything except {top_project}.",
-        "You've been distracted lately. Reset with one clear task.",
+        "Last stretch was scattered — happens. Pick one thing on {top_project} and just start.",
+        "Hard to focus right now? Close the noise and come back to {top_project} — even 10 minutes helps.",
+        "You drifted a bit, that's okay. What's the one next thing you were doing on {top_project}?",
     ],
     "MOTIVATION": [
-        "{active_min:.0f} minutes in. Good day on {top_project}.",
-        "Solid work on {top_project} today. Keep the momentum.",
-        "Nice session. {active_min:.0f} focused minutes and counting.",
+        "You've put in {active_min:.0f} solid minutes on {top_project} today. That kind of consistency adds up.",
+        "Still going on {top_project} — the effort you're putting in today genuinely matters.",
+        "{active_min:.0f} active minutes and still building. That's a session worth having.",
+        "Good progress on {top_project} today. You're doing better than you think.",
     ],
     "FATIGUE_WARNING": [
-        "Your pace has dropped. That's your body's cue — take 10.",
-        "Longer sessions ≠ better sessions. A break now helps tomorrow.",
-        "Signs of fatigue. Step back before you make mistakes.",
+        "You've pushed hard — {min_since_break:.0f} minutes without a break is a lot. Please step away.",
+        "Your body is asking for rest right now. Listen to it before you burn out.",
+        "{min_since_break:.0f} minutes without stopping — {top_project} will wait. You need to recharge.",
     ],
     "LATE_NIGHT": [
-        "Still here? Respect. Wrap up in 30 if you can.",
-        "Late session on {top_project}. Make sure you sleep.",
-        "Great dedication — but rest is part of the process.",
+        "It's late and you've already put in {active_min:.0f} good minutes. Time to let yourself stop.",
+        "You've done real work today on {top_project}. The best thing for tomorrow is to close the laptop now.",
+        "Still here? You've earned the rest. Wind down and protect tomorrow.",
     ],
     "ACHIEVEMENT": [
-        "{flow_pct:.0f}% Flow today. That's a great day by any measure.",
-        "{active_min:.0f} focused minutes on {top_project}. Ship it.",
-        "Flow ratio today: {flow_pct:.0f}%. You're doing something right.",
+        "Genuinely great session — {flow_pct:.0f}% of your time in real focus on {top_project}. Be proud of that.",
+        "You brought your best to {top_project} today. {active_min:.0f} focused minutes is worth remembering.",
+        "That {flow_pct:.0f}% flow ratio today? That's not luck — that's you showing up and doing the work.",
     ],
 }
 
