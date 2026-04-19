@@ -51,13 +51,12 @@ class OnboardingBridge:
         self._window = window
 
     def submit(self, work_schedule: str, focus_style: str,
-               wellbeing_goal: str, has_meetings: int) -> None:
+               wellbeing_goal: str, has_meetings: int = 0) -> None:
         """Called by JS when the user completes the last step."""
         _result.update({
             "work_schedule":  work_schedule,
             "focus_style":    focus_style,
             "wellbeing_goal": wellbeing_goal,
-            "has_meetings":   int(has_meetings),
         })
         if self._window:
             try:

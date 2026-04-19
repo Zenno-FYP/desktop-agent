@@ -29,6 +29,7 @@ except Exception as e:
 nudge_type   = data.get("nudge_type", "MOTIVATION")
 nudge_text   = data.get("nudge_text", "")
 display_ms   = int(data.get("display_ms", 7000))
+play_sound   = bool(data.get("play_sound", False))
 
 # ── Screen dimensions (Windows) ───────────────────────────────────────────────
 NOTIF_W, NOTIF_H = 380, 108
@@ -73,7 +74,8 @@ bridge = NotifBridge()
 def _on_loaded():
     try:
         js = (
-            f'init({json.dumps(nudge_type)}, {json.dumps(nudge_text)}, {display_ms});'
+            f'init({json.dumps(nudge_type)}, {json.dumps(nudge_text)}, '
+            f'{display_ms}, {json.dumps(play_sound)});'
         )
         window.evaluate_js(js)
     except Exception as e:

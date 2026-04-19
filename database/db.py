@@ -234,6 +234,9 @@ class Database:
                 total_idle_sec INTEGER NOT NULL DEFAULT 0,
                 total_mouse_movement_distance REAL NOT NULL DEFAULT 0.0,
                 needs_sync INTEGER NOT NULL DEFAULT 1,
+                total_keystrokes REAL NOT NULL DEFAULT 0.0,
+                total_duration_min REAL NOT NULL DEFAULT 0.0,
+                total_clicks REAL NOT NULL DEFAULT 0.0,
                 PRIMARY KEY (date, project_name),
                 FOREIGN KEY (project_name) REFERENCES projects(project_name) ON DELETE CASCADE
             )
@@ -298,7 +301,8 @@ class Database:
                 work_schedule           TEXT    DEFAULT 'standard',
                 focus_style             TEXT    DEFAULT 'moderate',
                 wellbeing_goal          TEXT    DEFAULT 'focused',
-                has_meetings            INTEGER DEFAULT 0,
+                nudge_enabled           INTEGER DEFAULT 1,
+                notification_sound      INTEGER DEFAULT 0,
                 onboarding_completed_at TEXT,
                 onboarding_version      INTEGER DEFAULT 1
             )
@@ -309,6 +313,28 @@ class Database:
             with self.conn:
                 for stmt in statements:
                     self.conn.execute(stmt)
+
+        # ── Migrations: add columns introduced after initial schema ────────────
+        self._run_migrations()
+
+    def _run_migrations(self) -> None:
+        """Add columns that were added after a DB was first created (idempotent)."""
+        migrations = [
+            # nudge_enabled and notification_sound replaced has_meetings
+            "ALTER TABLE user_preferences ADD COLUMN nudge_enabled INTEGER DEFAULT 1",
+            "ALTER TABLE user_preferences ADD COLUMN notification_sound INTEGER DEFAULT 0",
+            # Raw accumulator columns for correct incremental KPM/CPM calculation
+            "ALTER TABLE daily_project_behavior ADD COLUMN total_keystrokes REAL NOT NULL DEFAULT 0.0",
+            "ALTER TABLE daily_project_behavior ADD COLUMN total_duration_min REAL NOT NULL DEFAULT 0.0",
+            "ALTER TABLE daily_project_behavior ADD COLUMN total_clicks REAL NOT NULL DEFAULT 0.0",
+        ]
+        with self._lock:
+            with self.conn:
+                for sql in migrations:
+                    try:
+                        self.conn.execute(sql)
+                    except Exception:
+                        pass  # Column already exists — safe to ignore
 
     def insert_activity_log(self, activity_data: dict) -> int:
         """Insert an activity log entry into raw_activity_logs.
@@ -1296,8 +1322,8 @@ class Database:
     def get_user_preferences(self) -> dict | None:
         """Return stored onboarding preferences as a dict, or None if not set."""
         cur = self.conn.execute(
-            "SELECT work_schedule, focus_style, wellbeing_goal, has_meetings, "
-            "onboarding_completed_at, onboarding_version "
+            "SELECT work_schedule, focus_style, wellbeing_goal, nudge_enabled, "
+            "notification_sound, onboarding_completed_at, onboarding_version "
             "FROM user_preferences WHERE id = 1"
         )
         row = cur.fetchone()
@@ -1307,9 +1333,10 @@ class Database:
             "work_schedule":           row[0],
             "focus_style":             row[1],
             "wellbeing_goal":          row[2],
-            "has_meetings":            bool(row[3]),
-            "onboarding_completed_at": row[4],
-            "onboarding_version":      row[5],
+            "nudge_enabled":           bool(row[3]) if row[3] is not None else True,
+            "notification_sound":      bool(row[4]) if row[4] is not None else False,
+            "onboarding_completed_at": row[5],
+            "onboarding_version":      row[6],
         }
 
     def upsert_user_preferences(
@@ -1317,7 +1344,8 @@ class Database:
         work_schedule: str,
         focus_style: str,
         wellbeing_goal: str,
-        has_meetings: bool,
+        nudge_enabled: bool = True,
+        notification_sound: bool = False,
         version: int = 1,
     ) -> None:
         """Insert or update the single user-preferences row."""
@@ -1327,14 +1355,16 @@ class Database:
                     """
                     INSERT OR REPLACE INTO user_preferences
                         (id, work_schedule, focus_style, wellbeing_goal,
-                         has_meetings, onboarding_completed_at, onboarding_version)
-                    VALUES (1, ?, ?, ?, ?, ?, ?)
+                         nudge_enabled, notification_sound,
+                         onboarding_completed_at, onboarding_version)
+                    VALUES (1, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         work_schedule,
                         focus_style,
                         wellbeing_goal,
-                        1 if has_meetings else 0,
+                        1 if nudge_enabled else 0,
+                        1 if notification_sound else 0,
                         self._get_local_time_iso(),
                         version,
                     ),

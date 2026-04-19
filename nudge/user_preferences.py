@@ -88,10 +88,11 @@ _PERSONA: dict[str, str] = {
 
 @dataclass
 class UserPreferences:
-    work_schedule:  str  = "standard"   # morning | standard | evening | night_owl
-    focus_style:    str  = "moderate"   # deep | moderate | pomodoro
-    wellbeing_goal: str  = "focused"    # focused | burnout | habits | minimal
-    has_meetings:   bool = False
+    work_schedule:      str  = "standard"   # morning | standard | evening | night_owl
+    focus_style:        str  = "moderate"   # deep | moderate | pomodoro
+    wellbeing_goal:     str  = "focused"    # focused | burnout | habits | minimal
+    nudge_enabled:      bool = True         # master on/off switch (synced from website)
+    notification_sound: bool = False        # play chime on each nudge (synced from website)
 
     # ── Computed overrides ─────────────────────────────────────────────────
 
@@ -127,9 +128,8 @@ class UserPreferences:
 
     @property
     def meeting_suppression_threshold(self) -> float:
-        """Communication ratio above which nudges are suppressed during meetings."""
-        # Heavy meeting schedule → lower threshold (suppress more eagerly)
-        return 0.60 if self.has_meetings else 0.80
+        """Communication ratio above which nudges are suppressed (in-meeting guard)."""
+        return 0.80
 
     @property
     def nudge_interval_override_min(self) -> int | None:
@@ -153,16 +153,18 @@ class UserPreferences:
             self.work_schedule,
             self.focus_style,
             self.wellbeing_goal,
-            1 if self.has_meetings else 0,
+            1 if self.nudge_enabled else 0,
+            1 if self.notification_sound else 0,
         )
 
     @staticmethod
     def from_row(row) -> "UserPreferences":
         return UserPreferences(
-            work_schedule  = row[0] or "standard",
-            focus_style    = row[1] or "moderate",
-            wellbeing_goal = row[2] or "focused",
-            has_meetings   = bool(row[3]),
+            work_schedule      = row[0] or "standard",
+            focus_style        = row[1] or "moderate",
+            wellbeing_goal     = row[2] or "focused",
+            nudge_enabled      = bool(row[3]) if row[3] is not None else True,
+            notification_sound = bool(row[4]) if len(row) > 4 and row[4] is not None else False,
         )
 
 
@@ -173,7 +175,7 @@ def load_from_db(db_path: str) -> UserPreferences:
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.execute(
-            "SELECT work_schedule, focus_style, wellbeing_goal, has_meetings "
+            "SELECT work_schedule, focus_style, wellbeing_goal, nudge_enabled, notification_sound "
             "FROM user_preferences WHERE id = 1"
         )
         row = cur.fetchone()
@@ -211,10 +213,11 @@ def run_onboarding(db_path: str) -> UserPreferences:
         data = {}
 
     prefs = UserPreferences(
-        work_schedule  = data.get("work_schedule", "standard"),
-        focus_style    = data.get("focus_style", "moderate"),
-        wellbeing_goal = data.get("wellbeing_goal", "focused"),
-        has_meetings   = bool(data.get("has_meetings", 0)),
+        work_schedule      = data.get("work_schedule", "standard"),
+        focus_style        = data.get("focus_style", "moderate"),
+        wellbeing_goal     = data.get("wellbeing_goal", "focused"),
+        nudge_enabled      = bool(data.get("nudge_enabled", 1)),
+        notification_sound = bool(data.get("notification_sound", 0)),
     )
 
     # Persist to DB
@@ -223,18 +226,18 @@ def run_onboarding(db_path: str) -> UserPreferences:
         conn.execute(
             """
             INSERT OR REPLACE INTO user_preferences
-                (id, work_schedule, focus_style, wellbeing_goal, has_meetings,
-                 onboarding_completed_at, onboarding_version)
-            VALUES (1, ?, ?, ?, ?, ?, 1)
+                (id, work_schedule, focus_style, wellbeing_goal, nudge_enabled,
+                 notification_sound, onboarding_completed_at, onboarding_version)
+            VALUES (1, ?, ?, ?, ?, ?, ?, 1)
             """,
             prefs.to_db_tuple() + (datetime.now().isoformat(),),
         )
         conn.commit()
         conn.close()
         logger.info(
-            "[Onboarding] Saved preferences: schedule=%s focus=%s goal=%s meetings=%s",
+            "[Onboarding] Saved preferences: schedule=%s focus=%s goal=%s sound=%s",
             prefs.work_schedule, prefs.focus_style,
-            prefs.wellbeing_goal, prefs.has_meetings,
+            prefs.wellbeing_goal, prefs.notification_sound,
         )
     except Exception:
         logger.exception("[Onboarding] Failed to save preferences to DB")

@@ -87,10 +87,11 @@ class PreferencesPoller:
 
             data: dict = resp.json().get("data", {})
             remote = UserPreferences(
-                work_schedule  = data.get("work_schedule", "standard"),
-                focus_style    = data.get("focus_style", "moderate"),
-                wellbeing_goal = data.get("wellbeing_goal", "focused"),
-                has_meetings   = bool(data.get("has_meetings", False)),
+                work_schedule      = data.get("work_schedule", "standard"),
+                focus_style        = data.get("focus_style", "moderate"),
+                wellbeing_goal     = data.get("wellbeing_goal", "focused"),
+                nudge_enabled      = bool(data.get("nudge_enabled", True)),
+                notification_sound = bool(data.get("notification_sound", False)),
             )
 
             local = self._load_local()
@@ -98,9 +99,15 @@ class PreferencesPoller:
                 self._save_local(remote)
                 logger.info(
                     "[PreferencesPoller] Preferences updated from backend: "
-                    "schedule=%s focus=%s goal=%s meetings=%s",
+                    "schedule=%s focus=%s goal=%s nudge_enabled=%s sound=%s",
                     remote.work_schedule, remote.focus_style,
-                    remote.wellbeing_goal, remote.has_meetings,
+                    remote.wellbeing_goal, remote.nudge_enabled,
+                    remote.notification_sound,
+                )
+                logger.info(
+                    "[PreferencesPoller] Preferences updated: nudge_enabled=%s sound=%s",
+                    remote.nudge_enabled,
+                    remote.notification_sound,
                 )
                 if self._on_change:
                     try:
@@ -135,7 +142,7 @@ class PreferencesPoller:
         try:
             conn = sqlite3.connect(self.db_path)
             cur = conn.execute(
-                "SELECT work_schedule, focus_style, wellbeing_goal, has_meetings "
+                "SELECT work_schedule, focus_style, wellbeing_goal, nudge_enabled, notification_sound "
                 "FROM user_preferences WHERE id = 1"
             )
             row = cur.fetchone()
@@ -147,16 +154,31 @@ class PreferencesPoller:
         return None
 
     def _save_local(self, prefs: UserPreferences) -> None:
+        """Write only the preference columns — never touches onboarding_completed_at."""
         try:
             conn = sqlite3.connect(self.db_path)
+            # Ensure the row exists first (INSERT OR IGNORE leaves onboarding data intact)
+            conn.execute(
+                "INSERT OR IGNORE INTO user_preferences (id) VALUES (1)"
+            )
+            # Update only the synced columns — onboarding_completed_at is untouched
             conn.execute(
                 """
-                INSERT OR REPLACE INTO user_preferences
-                    (id, work_schedule, focus_style, wellbeing_goal, has_meetings)
-                VALUES (1, ?, ?, ?, ?)
+                UPDATE user_preferences
+                SET work_schedule      = ?,
+                    focus_style        = ?,
+                    wellbeing_goal     = ?,
+                    nudge_enabled      = ?,
+                    notification_sound = ?
+                WHERE id = 1
                 """,
-                (prefs.work_schedule, prefs.focus_style,
-                 prefs.wellbeing_goal, int(prefs.has_meetings)),
+                (
+                    prefs.work_schedule,
+                    prefs.focus_style,
+                    prefs.wellbeing_goal,
+                    int(prefs.nudge_enabled),
+                    int(prefs.notification_sound),
+                ),
             )
             conn.commit()
             conn.close()
@@ -168,8 +190,9 @@ class PreferencesPoller:
         if b is None:
             return True
         return (
-            a.work_schedule  != b.work_schedule  or
-            a.focus_style    != b.focus_style    or
-            a.wellbeing_goal != b.wellbeing_goal or
-            a.has_meetings   != b.has_meetings
+            a.work_schedule      != b.work_schedule      or
+            a.focus_style        != b.focus_style        or
+            a.wellbeing_goal     != b.wellbeing_goal     or
+            a.nudge_enabled      != b.nudge_enabled      or
+            a.notification_sound != b.notification_sound
         )

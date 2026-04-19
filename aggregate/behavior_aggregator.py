@@ -78,24 +78,51 @@ class BehaviorAggregator:
         sql_commands = []
         
         for (date, project_name), metrics in aggregates.items():
-            # Calculate weighted average rates (KPM and CPM)
-            # Formula: total_count / total_duration_min = rate per minute
-            typing_intensity_kpm = metrics["total_keystrokes"] / max(metrics["total_duration_min"], 0.01) if metrics["total_duration_min"] > 0 else 0.0
-            mouse_click_rate_cpm = metrics["total_clicks"] / max(metrics["total_duration_min"], 0.01) if metrics["total_duration_min"] > 0 else 0.0
-            
+            batch_keystrokes = metrics["total_keystrokes"]
+            batch_duration_min = metrics["total_duration_min"]
+            batch_clicks = metrics["total_clicks"]
+
+            # Derive KPM/CPM from this batch's raw totals (used on fresh INSERT)
+            batch_kpm = batch_keystrokes / batch_duration_min if batch_duration_min > 0 else 0.0
+            batch_cpm = batch_clicks / batch_duration_min if batch_duration_min > 0 else 0.0
+
             sql_commands.append((
                 """
-                INSERT INTO daily_project_behavior (date, project_name, typing_intensity_kpm, mouse_click_rate_cpm, total_deletion_key_presses, total_idle_sec, total_mouse_movement_distance, needs_sync)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                INSERT INTO daily_project_behavior (
+                    date, project_name,
+                    typing_intensity_kpm, mouse_click_rate_cpm,
+                    total_deletion_key_presses, total_idle_sec, total_mouse_movement_distance,
+                    total_keystrokes, total_duration_min, total_clicks,
+                    needs_sync
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 ON CONFLICT(date, project_name) DO UPDATE SET
-                    typing_intensity_kpm = excluded.typing_intensity_kpm,
-                    mouse_click_rate_cpm = excluded.mouse_click_rate_cpm,
-                    total_deletion_key_presses = daily_project_behavior.total_deletion_key_presses + excluded.total_deletion_key_presses,
-                    total_idle_sec = daily_project_behavior.total_idle_sec + excluded.total_idle_sec,
+                    total_keystrokes    = daily_project_behavior.total_keystrokes    + excluded.total_keystrokes,
+                    total_duration_min  = daily_project_behavior.total_duration_min  + excluded.total_duration_min,
+                    total_clicks        = daily_project_behavior.total_clicks        + excluded.total_clicks,
+                    typing_intensity_kpm = CASE
+                        WHEN (daily_project_behavior.total_duration_min + excluded.total_duration_min) > 0
+                        THEN (daily_project_behavior.total_keystrokes + excluded.total_keystrokes)
+                             / (daily_project_behavior.total_duration_min + excluded.total_duration_min)
+                        ELSE 0.0
+                    END,
+                    mouse_click_rate_cpm = CASE
+                        WHEN (daily_project_behavior.total_duration_min + excluded.total_duration_min) > 0
+                        THEN (daily_project_behavior.total_clicks + excluded.total_clicks)
+                             / (daily_project_behavior.total_duration_min + excluded.total_duration_min)
+                        ELSE 0.0
+                    END,
+                    total_deletion_key_presses    = daily_project_behavior.total_deletion_key_presses    + excluded.total_deletion_key_presses,
+                    total_idle_sec                = daily_project_behavior.total_idle_sec                + excluded.total_idle_sec,
                     total_mouse_movement_distance = daily_project_behavior.total_mouse_movement_distance + excluded.total_mouse_movement_distance,
                     needs_sync = 1
                 """,
-                (date, project_name, round(typing_intensity_kpm, 2), round(mouse_click_rate_cpm, 2), metrics["total_deletions"], metrics["total_idle"], round(metrics["total_mouse_distance"], 2)),
+                (
+                    date, project_name,
+                    round(batch_kpm, 2), round(batch_cpm, 2),
+                    metrics["total_deletions"], metrics["total_idle"], round(metrics["total_mouse_distance"], 2),
+                    round(batch_keystrokes, 2), round(batch_duration_min, 4), round(batch_clicks, 2),
+                ),
             ))
 
         return sql_commands

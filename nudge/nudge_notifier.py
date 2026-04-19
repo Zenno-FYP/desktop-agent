@@ -31,13 +31,14 @@ class NudgeNotifier:
     def __init__(self, display_sec: int = 7):
         self.display_ms = display_sec * 1000
 
-    def show(self, nudge_type: str, nudge_text: str) -> bool:
+    def show(self, nudge_type: str, nudge_text: str, play_sound: bool = False) -> bool:
         """
         Show the nudge notification. Non-blocking — returns immediately.
 
         Args:
-            nudge_type: One of the 7 nudge taxonomy types.
-            nudge_text: The text to display.
+            nudge_type:  One of the 7 nudge taxonomy types.
+            nudge_text:  The text to display.
+            play_sound:  If True, the notification plays a short chime.
 
         Returns:
             True if subprocess was launched, False on error.
@@ -46,6 +47,7 @@ class NudgeNotifier:
             "nudge_type": nudge_type,
             "nudge_text": nudge_text,
             "display_ms": self.display_ms,
+            "play_sound": play_sound,
         })
 
         try:
