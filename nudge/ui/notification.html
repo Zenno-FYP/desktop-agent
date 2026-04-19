@@ -206,7 +206,25 @@
 
     let dismissTimer = null;
 
-    function init(nudgeType, nudgeText, displayMs) {
+    function playChime() {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc  = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.25);
+        gain.gain.setValueAtTime(0.25, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.45);
+        osc.onended = () => ctx.close();
+      } catch (_) {}
+    }
+
+    function init(nudgeType, nudgeText, displayMs, playSound) {
       const cfg = TYPE_CONFIG[nudgeType] || DEFAULT_CFG;
 
       document.getElementById('icon').textContent        = cfg.icon;
@@ -217,6 +235,8 @@
       root.style.setProperty('--type-color', cfg.color);
       root.style.setProperty('--type-glow',  cfg.glow);
       root.style.setProperty('--dismiss-ms', displayMs + 'ms');
+
+      if (playSound) playChime();
 
       dismissTimer = setTimeout(dismiss, displayMs);
     }

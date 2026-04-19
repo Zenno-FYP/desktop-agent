@@ -88,6 +88,10 @@ class NudgeSyncer:
                         "nudge_type": row["nudge_type"],
                         "nudge_text": row["nudge_text"] or "",
                         "was_suppressed": bool(row["was_suppressed"]),
+                        # Include suppression_reason so the website's Zenno
+                        # Agent stats page can bucket new reasons like
+                        # `aggregation_failed` and `display_failed`.
+                        "suppression_reason": row.get("suppression_reason"),
                     }
                     for row in rows
                 ]
@@ -131,7 +135,8 @@ class NudgeSyncer:
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
             """
-            SELECT nudge_id, generated_at, nudge_type, nudge_text, was_suppressed
+            SELECT nudge_id, generated_at, nudge_type, nudge_text,
+                   was_suppressed, suppression_reason
             FROM nudge_log
             WHERE nudge_id > ?
             ORDER BY nudge_id ASC

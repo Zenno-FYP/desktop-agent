@@ -32,6 +32,12 @@ class BehavioralMetrics:
         self.mouse_movement_distance = 0  # Total pixels moved (Euclidean distance)
         self.last_mouse_x = None
         self.last_mouse_y = None
+
+        # Scroll metrics — pynput emits one on_scroll per wheel notch (vertical
+        # OR horizontal). We track the count separately from clicks so the
+        # aggregator can later distinguish "active reading" (lots of scroll,
+        # few clicks) from "active typing" or "navigation" (lots of clicks).
+        self.scroll_event_count = 0
         
         # Deletion key metrics (Delete, Backspace, Ctrl+Z/Cmd+Z)
         self.deletion_key_count = 0
@@ -58,9 +64,12 @@ class BehavioralMetrics:
             self.keyboard_listener = keyboard.Listener(on_press=self._on_key_press, on_release=self._on_key_release)
             self.keyboard_listener.start()
             
-            # Mouse listener (clicks only - NO on_move event for performance)
+            # Mouse listener: clicks + scroll wheel. We deliberately do NOT
+            # subscribe to on_move (that's polled by the sampler thread) so the
+            # listener stays responsive even on high-DPI mice.
             self.mouse_listener = mouse.Listener(
-                on_click=self._on_mouse_click
+                on_click=self._on_mouse_click,
+                on_scroll=self._on_mouse_scroll,
             )
             self.mouse_listener.start()
             
@@ -197,47 +206,80 @@ class BehavioralMetrics:
         except Exception as e:
             self.logger.exception("[BehavioralMetrics] Click error")
 
+    def _on_mouse_scroll(self, x, y, dx, dy):
+        """Handle mouse-wheel scroll event.
+
+        pynput delivers one event per notch — `dx` is horizontal,
+        `dy` is vertical. We count both as a single scroll event because the
+        downstream signal we care about is "user is engaged with content",
+        not the direction.
+        """
+        try:
+            with self.lock:
+                self.scroll_event_count += 1
+                self.last_activity_time = time.time()
+        except Exception:
+            self.logger.exception("[BehavioralMetrics] Scroll error")
+
     def _sample_mouse_movement(self):
         """Background thread: Sample mouse position every 100ms and calculate distance.
-        
+
         Uses polling (not event-based) for CPU efficiency.
         Calculates Euclidean distance between samples.
         Runs at 10Hz (100ms intervals).
+
+        Sanity guards:
+        - Distances <=1px are treated as noise (jitter).
+        - Distances >MAX_REASONABLE_JUMP px in one 100ms tick are treated as
+          a teleport (e.g. screen unlock, monitor hot-plug, RDP reconnect)
+          and discarded — otherwise they would inflate the metric by tens
+          of thousands of pixels per event.
         """
+        # ~5000px in 100ms == ~50 m/s of pointer travel — safely above any
+        # human flick on a 4K-wide setup but below the kind of jumps caused
+        # by Win+L / display switch.
+        MAX_REASONABLE_JUMP = 5000.0
         try:
             mouse_controller = mouse.Controller()
-            
+
             while not self.mouse_movement_stop_event.is_set():
                 try:
-                    # Get current mouse position
-                    current_x, current_y = mouse_controller.position
-                    
+                    pos = mouse_controller.position
+                    if pos is None:
+                        # Locked screen / secure desktop — drop the previous
+                        # anchor so the next sample doesn't compute a giant
+                        # jump back to the visible cursor.
+                        with self.lock:
+                            self.last_mouse_x = None
+                            self.last_mouse_y = None
+                        self.mouse_movement_stop_event.wait(self.movement_sample_interval)
+                        continue
+                    current_x, current_y = pos
+
                     with self.lock:
-                        # If we have a previous position, calculate Euclidean distance
                         if self.last_mouse_x is not None and self.last_mouse_y is not None:
                             dx = current_x - self.last_mouse_x
                             dy = current_y - self.last_mouse_y
-                            
-                            # Euclidean distance: sqrt(dx^2 + dy^2)
-                            distance = math.sqrt(dx**2 + dy**2)
-                            
-                            # Only count significant movements (>1 pixel) to avoid noise
-                            if distance > 1.0:
+                            distance = math.sqrt(dx * dx + dy * dy)
+
+                            if 1.0 < distance < MAX_REASONABLE_JUMP:
                                 self.mouse_movement_distance += distance
-                        
-                        # Update last position
+                            elif distance >= MAX_REASONABLE_JUMP:
+                                self.logger.debug(
+                                    "[MouseMovementSampler] Discarded teleport jump=%.1fpx",
+                                    distance,
+                                )
+
                         self.last_mouse_x = current_x
                         self.last_mouse_y = current_y
-                    
-                    # Sleep 100ms before next sample (10Hz = 10 samples/sec)
+
                     self.mouse_movement_stop_event.wait(self.movement_sample_interval)
-                    
+
                 except Exception as e:
                     self.logger.warning(f"[MouseMovementSampler] Error during sampling: {e}")
-                    # Continue sampling even on error
                     self.mouse_movement_stop_event.wait(self.movement_sample_interval)
-        
-        except Exception as e:
+
+        except Exception:
             self.logger.exception("[MouseMovementSampler] Fatal error in sampling thread")
 
 
@@ -256,13 +298,16 @@ class BehavioralMetrics:
             # Calculate rates per minute
             typing_intensity = (self.key_count / elapsed_sec) * 60
             mouse_click_rate = (self.click_count / elapsed_sec) * 60
-            
+            mouse_scroll_rate = (self.scroll_event_count / elapsed_sec) * 60
+
             return {
                 'typing_intensity': round(typing_intensity, 2),
                 'mouse_click_rate': round(mouse_click_rate, 2),
+                'mouse_scroll_rate': round(mouse_scroll_rate, 2),
                 'deletion_key_presses': self.deletion_key_count,
                 'key_count': self.key_count,
                 'click_count': self.click_count,
+                'mouse_scroll_events': self.scroll_event_count,
                 'mouse_movement_distance': round(self.mouse_movement_distance, 2),  # Total pixels moved
                 'elapsed_sec': elapsed_sec,
             }
@@ -272,6 +317,7 @@ class BehavioralMetrics:
         with self.lock:
             self.key_count = 0
             self.click_count = 0
+            self.scroll_event_count = 0
             self.deletion_key_count = 0
             self.mouse_movement_distance = 0
             self.last_click_time = 0

@@ -83,11 +83,13 @@ class NudgeScheduler:
             if override:
                 self.interval_sec = override * 60
             logger.info(
-                "[NudgeScheduler] Preferences applied: schedule=%s focus=%s goal=%s meetings=%s",
+                "[NudgeScheduler] Preferences applied: schedule=%s focus=%s goal=%s "
+                "nudge_enabled=%s sound=%s",
                 user_preferences.work_schedule,
                 user_preferences.focus_style,
                 user_preferences.wellbeing_goal,
-                user_preferences.has_meetings,
+                user_preferences.nudge_enabled,
+                user_preferences.notification_sound,
             )
 
         self._running = False
@@ -98,7 +100,16 @@ class NudgeScheduler:
             llm_enabled=llm_enabled,
             llm_timeout_sec=llm_timeout_sec,
         )
-        self.notifier = NudgeNotifier(display_sec=notification_display_sec) if notification_enabled else None
+        # Pass nudge_log so the notifier can record `display_failed`
+        # suppressions when the subprocess fails to launch.
+        self.notifier = (
+            NudgeNotifier(
+                display_sec=notification_display_sec,
+                nudge_log=self.nudge_log,
+            )
+            if notification_enabled
+            else None
+        )
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -140,9 +151,11 @@ class NudgeScheduler:
         if override:
             self.interval_sec = override * 60
         logger.info(
-            "[NudgeScheduler] Preferences reloaded: schedule=%s focus=%s goal=%s meetings=%s",
+            "[NudgeScheduler] Preferences reloaded: schedule=%s focus=%s goal=%s "
+            "nudge_enabled=%s sound=%s",
             prefs.work_schedule, prefs.focus_style,
-            prefs.wellbeing_goal, prefs.has_meetings,
+            prefs.wellbeing_goal, prefs.nudge_enabled,
+            prefs.notification_sound,
         )
 
     # ── Main Loop ──────────────────────────────────────────────────────────
@@ -170,16 +183,23 @@ class NudgeScheduler:
         """One nudge evaluation cycle."""
         logger.debug("[NudgeScheduler] Tick")
 
+        # ── Master switch: nudges disabled on website ──────────────────────
+        if self._prefs is not None and not self._prefs.nudge_enabled:
+            logger.debug("[NudgeScheduler] Suppressed (nudges disabled by user)")
+            self.nudge_log.record_suppressed("nudge_disabled")
+            return
+
         # ── Suppression: outside user's work window (quiet hours) ──────────
         if self._prefs is not None:
             current_hour = datetime.now().hour
             if self._prefs.is_quiet_hour(current_hour):
-                logger.debug(
+                logger.info(
                     "[NudgeScheduler] Suppressed (quiet hours: hour=%d, window=%s)",
                     current_hour,
                     self._quiet_window,
                 )
-                return  # Silent — no log entry, user is not working
+                self.nudge_log.record_suppressed("quiet_hours")
+                return
 
         # ── Suppression: too soon since last nudge ─────────────────────────
         min_since = self.nudge_log.min_since_last_nudge()
@@ -201,7 +221,17 @@ class NudgeScheduler:
         try:
             ctx = aggregator.aggregate()
         except Exception:
+            # Record the suppression so the website's Zenno Agent stats page can
+            # surface this as "Aggregation failures" — otherwise the tick is
+            # invisible and we never learn that the desktop DB is corrupt or
+            # the schema migrated unexpectedly.
             logger.exception("[NudgeScheduler] Aggregation failed — skipping tick")
+            try:
+                self.nudge_log.record_suppressed("aggregation_failed")
+            except Exception:
+                logger.exception(
+                    "[NudgeScheduler] Failed to record aggregation_failed suppression"
+                )
             return
 
         # ── Suppression: not enough data yet ──────────────────────────────
@@ -235,8 +265,9 @@ class NudgeScheduler:
         nudge_text, llm_used = self.generator.generate(ctx_for_gen, persona=self._persona)
 
         # ── Show notification ─────────────────────────────────────────────
+        play_sound = bool(self._prefs.notification_sound) if self._prefs else False
         if self.notifier:
-            self.notifier.show(nudge_type, nudge_text)
+            self.notifier.show(nudge_type, nudge_text, play_sound=play_sound)
 
         # ── Log to DB ─────────────────────────────────────────────────────
         self.nudge_log.record(ctx_for_gen, nudge_text, llm_used=llm_used)
