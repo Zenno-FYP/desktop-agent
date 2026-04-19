@@ -209,8 +209,12 @@ class BehavioralMetrics:
             
             while not self.mouse_movement_stop_event.is_set():
                 try:
-                    # Get current mouse position
-                    current_x, current_y = mouse_controller.position
+                    # Get current mouse position (can be None on locked screen / secure desktop)
+                    pos = mouse_controller.position
+                    if pos is None:
+                        self.mouse_movement_stop_event.wait(self.movement_sample_interval)
+                        continue
+                    current_x, current_y = pos
                     
                     with self.lock:
                         # If we have a previous position, calculate Euclidean distance
