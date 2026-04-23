@@ -1,187 +1,209 @@
 # Zenno Desktop Agent (Windows)
 
-A Windows desktop activity monitor that logs active applications/window titles, captures basic input intensity signals (typing/clicks/scrolls/idle), detects project context from IDEs, and produces both raw and aggregated SQLite datasets.
+Zenno Desktop Agent is the local telemetry and nudge runtime for the Zenno platform. It captures app/window activity, behavioral intensity, and project context, then transforms those signals into analytics-ready aggregates and personalized nudge workflows.
 
-It runs fully locally (no network upload). Context labels can be inferred via heuristics or an optional ML model, and low-confidence predictions can be verified via ESM popups.
+## Product Overview
 
-## Quick Start
+The desktop agent is responsible for collecting and processing development activity on the user machine. It is designed to be resilient and mostly autonomous:
 
-### 1) Install
+- authenticates users via Firebase-backed desktop login
+- tracks activity in near real-time
+- infers context states (Flow/Debugging/Research/Communication/Distracted)
+- aggregates project, app, language, and behavior metrics to SQLite
+- syncs rollups to backend APIs
+- runs nudge scheduling and desktop notifications
 
-Recommended: use a virtual environment.
+This component bridges local runtime data with cloud-backed user experiences on website/mobile.
 
-```bash
+## Core Features
+
+### Authentication and Startup
+
+- embedded sign-in flow with pywebview
+- local token caching/refresh using Windows Credential Manager (`keyring`)
+- onboarding and preference bootstrap from backend
+
+### Activity Collection
+
+- active window monitoring (app, title, PID)
+- behavioral metrics (typing intensity, click rate, deletions, mouse movement)
+- idle detection and session segmentation
+- IDE-aware project/file/language detection
+
+### Context Classification
+
+- block-level inference pipeline
+- ML prediction path with confidence thresholds
+- heuristic fallback path when ML is unavailable or low confidence
+- optional ESM verification popup for uncertain predictions
+
+### Aggregation and Sync
+
+- ETL pipeline for daily summaries
+- sticky-project logic across generic apps (browser/terminal)
+- LOC snapshots by language/project
+- periodic backend sync of activity and nudge records
+
+### Nudge System
+
+- scheduler with suppression rules and quiet constraints
+- NLP API integration for generated nudge copy
+- deterministic fallback templates when API fails
+- user preference polling from backend
+
+## Runtime Pipeline
+
+1. **Authenticate** user and load preferences.
+2. **Collect** raw sessions into `raw_activity_logs`.
+3. **Evaluate** blocks into context labels + confidence.
+4. **Aggregate** into project/app/language/context/behavior rollups.
+5. **Sync** pending records to backend.
+6. **Schedule nudges** and notify user.
+
+## Repository Structure
+
+- `main.py` - auth window + onboarding + agent bootstrap
+- `agent.py` - long-running monitoring and orchestration loop
+- `config/` - YAML configuration and loader
+- `auth/` - auth bridge/webview/token management
+- `monitor/` - app focus, input, idle, project detection
+- `analyze/` - block evaluator and context detector
+- `ml/` - model training/inference utilities and ESM UI
+- `aggregate/` - ETL orchestrator and LOC scanner
+- `sync/` - backend sync workers
+- `nudge/` - scheduler, generator, notifier, poller, syncer
+- `database/` - SQLite schema and query layer
+- `data/` - local DB/models/artifacts
+
+## Requirements
+
+- Windows (primary target platform)
+- Python 3.10+ (3.11 recommended)
+- SQLite (bundled with Python stdlib)
+- Firebase project + backend + nlp services for full online flow
+
+Install:
+
+```powershell
 python -m venv .venv
-.\\.venv\\Scripts\\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-### 2) Configure
+## Environment Variables
 
-Edit [config/config.yaml](config/config.yaml). The default DB path in the config is:
+Create `.env` from `.env.example`:
 
-- `db.path: ./data/db/zenno.db`
+```powershell
+Copy-Item .env.example .env
+```
 
-### 3) Run
+### Required
 
-```bash
+- `FIREBASE_API_KEY`
+- `FIREBASE_AUTH_DOMAIN`
+- `FIREBASE_PROJECT_ID`
+- `BACKEND_BASE_URL`
+- `NUDGE_API_URL`
+
+### Recommended for production/dev parity
+
+- `NUDGE_API_SECRET`
+- `NUDGE_API_TIMEOUT`
+- `SYNC_TIMEOUT_SECONDS`
+- `PREFS_POLL_INTERVAL_SEC`
+- `NUDGE_SYNC_INTERVAL_SEC`
+
+## Configuration (`config/config.yaml`)
+
+Most runtime behavior is controlled by YAML config, including:
+
+- sampling and flush intervals
+- block duration and heuristic thresholds
+- ML enablement/confidence threshold/model path
+- ESM popup behavior and rate limits
+- ETL mapping and sticky-project TTL
+- LOC scanning rules
+- database and logging settings
+- nudge policy and suppression tuning
+
+The config file acts as the primary tuning surface; `.env` covers integrations and external endpoints/secrets.
+
+## Running the Agent
+
+### Full flow (recommended)
+
+```powershell
+python main.py
+```
+
+This launches auth + onboarding and then starts `DesktopAgent`.
+
+### Direct agent loop (advanced/local testing)
+
+```powershell
 python agent.py
 ```
 
-## What It Does
+## Data Model and Storage
 
-### Pipeline (Collector → Tagger → Aggregator)
+Primary SQLite tables include:
 
-1. **Collect (real time)**
-   - Reads the active window (app name, window title, PID)
-   - Tracks activity intensity (KPM/CPM/scrolls) + idle duration
-   - Detects project name/file/language when possible
-   - Writes rows to `raw_activity_logs` with `context_state = NULL`
+- `raw_activity_logs` (source-of-truth sessions)
+- `projects`
+- `daily_project_apps`
+- `daily_project_languages`
+- `daily_project_context`
+- `daily_project_behavior`
+- `project_skills`
+- `project_loc_snapshots`
 
-2. **Evaluate in blocks (background thread)**
-   - Every `block_duration_sec` seconds, queries recent unevaluated logs
-   - Aggregates block metrics and predicts a context label
-   - Uses ML when enabled and available; falls back to heuristics when needed
-   - Updates the block’s logs with `context_state` + `confidence_score`
-
-3. **Aggregate (ETL Maestro)**
-   - After tagging, runs the ETL pipeline to upsert daily project/app/language/skill/context/behavior rollups
-   - Applies manual verification override: `manually_verified_label` wins over ML/heuristic
-   - Buckets by local date (auto-detected from system timezone)
-
-4. **LOC snapshots (idle-triggered)**
-   - Periodically scans active projects while you’re idle
-   - Stores per-language LOC + file count in `project_loc_snapshots`
-
-## Project Structure
-
-```
-agent.py               Entry point (main loop)
-config/                YAML config + loader
-monitor/               Window + input + idle + project detection
-analyze/               Block evaluator + heuristic context detector
-ml/                    Feature extraction, model training, predictor, ESM popup
-aggregate/             ETL pipeline + aggregators + LOC scanner
-database/              SQLite schema + queries
-data/                  Models, datasets, SQLite DB (default)
-logs/                  Log file output (optional)
-```
-
-## Configuration (Key Settings)
-
-All settings live in [config/config.yaml](config/config.yaml) and are read via dot-keys.
-
-Minimal example:
-
-```yaml
-sample_interval_sec: 2
-flush_interval_sec: 300
-idle_threshold_sec: 10
-
-behavioral_metrics:
-  click_debounce_ms: 50
-  max_typing_intensity_kpm: 200
-  max_mouse_click_rate_cpm: 200
-
-block_duration_sec: 300
-
-ml_enabled: true
-ml_model_path: ./data/models/context_detector.pkl
-ml_confidence_threshold: 0.5
-
-esm_popup:
-  enabled: true
-  confidence_threshold: 0.70
-
-etl_pipeline:
-  sticky_project_ttl_sec: 900
-
-loc_scanner:
-  scan_interval_sec: 3600
-  idle_ratio_threshold: 0.3
-
-db:
-  path: ./data/db/zenno.db
-  check_same_thread: false
-  timeout: 10.0
-  journal_mode: WAL
-
-logging:
-  level: INFO
-  file: ./logs/agent.log
-```
-
-## Database (SQLite)
-
-### Main tables
-
-- `raw_activity_logs`: session-level logs (source of truth)
-- `projects`: known projects + activity timestamps
-- `daily_project_apps`, `daily_project_languages`
-- `project_skills`: cumulative per-project skills (like LOC snapshots)
-- `daily_project_context`, `daily_project_behavior`
-- `project_loc_snapshots`: per-project per-language LOC + file counts
-
-### Quick checks
+Quick health check:
 
 ```python
 import sqlite3
-
 conn = sqlite3.connect("data/db/zenno.db")
 cur = conn.cursor()
-
 cur.execute("SELECT COUNT(*) FROM raw_activity_logs")
 print("raw logs:", cur.fetchone()[0])
-
 cur.execute("SELECT COUNT(*) FROM raw_activity_logs WHERE context_state IS NOT NULL")
 print("tagged logs:", cur.fetchone()[0])
-
 conn.close()
 ```
 
-## ML Model (Optional)
+## ML and Heuristic Modes
 
-When `ml_enabled: true`, the evaluator will try to load the model at `ml_model_path`.
+When `ml_enabled: true`, the block evaluator attempts to load `ml_model_path`.
 
-- If the file is missing or the model fails to load, the agent continues using heuristic fallback.
-- If ML confidence is below `ml_confidence_threshold`, it falls back to heuristics.
+- if model loads and confidence is high enough: use ML
+- if model missing/error/low confidence: use heuristic fallback
 
-### Training / retraining
+Train/retrain local model:
 
-```bash
+```powershell
 python -m ml.synthetic_data_generator
 python -m ml.train_model
 ```
 
-Then update `ml_model_path` in [config/config.yaml](config/config.yaml) to point at the generated `.pkl`.
+## Integration Dependencies
 
-## ESM Popups (Verification)
+For complete functionality, desktop-agent expects:
 
-If enabled, low-confidence blocks can be queued for verification. Verified labels are stored in:
+- backend API reachable at `BACKEND_BASE_URL`
+- nlp API reachable at `NUDGE_API_URL`
+- valid Firebase config for auth flow
 
-- `raw_activity_logs.manually_verified_label`
-- `raw_activity_logs.verified_at`
+## Privacy and Security Notes
 
-## Privacy Notes
-
-- This project **does not capture keystroke contents** (it only counts events).
-- Window titles and file paths may still contain sensitive information (depending on apps and your workflow).
-- Data is stored locally in SQLite by default; review your retention/backups accordingly.
+- Keystroke content is not captured (event counts only).
+- Window titles/file paths may still contain sensitive information.
+- Local SQLite database can include sensitive metadata; secure backups accordingly.
+- Keep `.env` local only; never commit real credentials or API secrets.
 
 ## Troubleshooting
 
-- **No context tagging happening**: keep the agent running past one full `block_duration_sec` interval and check `logging.level`.
-- **DB locked errors**: increase `db.timeout` and ensure `db.journal_mode: WAL`.
-- **High CPU during LOC scans**: increase `loc_scanner.scan_interval_sec`, increase `loc_scanner.idle_ratio_threshold`, and expand `loc_scanner.skip_directories`.
-
-## License
-
-Private project - Desktop Agent FYP
-
-## Author
-
-Zubair Abbas
-
----
-
-Last Updated: 2026-02-26
+- **No context labels**: wait at least one full `block_duration_sec`; check logs.
+- **DB lock errors**: ensure `db.journal_mode: WAL` and raise `db.timeout`.
+- **Nudges not showing**: verify backend prefs, nudge scheduler enabled, and NLP API reachability.
+- **Auth failures**: check Firebase env values and backend URL.
+- **High CPU**: increase `sample_interval_sec` and `loc_scanner.scan_interval_sec`.
