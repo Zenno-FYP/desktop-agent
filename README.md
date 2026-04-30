@@ -15,6 +15,15 @@ The desktop agent is responsible for collecting and processing development activ
 
 This component bridges local runtime data with cloud-backed user experiences on website/mobile.
 
+## Tech Stack
+
+- Python
+- SQLite (local storage)
+- pywebview (desktop auth UI)
+- Requests + keyring
+- Firebase auth integration (token verification flow)
+- scikit-learn / XGBoost (optional context model path)
+
 ## Core Features
 
 ### Authentication and Startup
@@ -207,3 +216,7 @@ For complete functionality, desktop-agent expects:
 - **Nudges not showing**: verify backend prefs, nudge scheduler enabled, and NLP API reachability.
 - **Auth failures**: check Firebase env values and backend URL.
 - **High CPU**: increase `sample_interval_sec` and `loc_scanner.scan_interval_sec`.
+
+---
+
+Last Updated: 2026-04-23
