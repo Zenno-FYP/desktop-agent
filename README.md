@@ -15,6 +15,8 @@ The desktop agent is responsible for collecting and processing development activ
 
 This component bridges local runtime data with cloud-backed user experiences on website/mobile.
 
+**Operators:** workspace-wide metrics in the **website admin console** include **desktop active (last hour)**, derived from recent activity sync timestamps on user records in the backend — keep sync healthy so admin dashboards stay accurate.
+
 ## Tech Stack
 
 - Python
@@ -219,4 +221,4 @@ For complete functionality, desktop-agent expects:
 
 ---
 
-Last Updated: 2026-04-23
+Last Updated: 2026-05-01
