@@ -71,14 +71,14 @@ class ActivityCollector:
                     if project_dict and project_dict.get("days"):
                         projects_data.append(project_dict)
                 except Exception as e:
-                    logger.error(f"Error collecting data for project '{project_name}': {e}")
+                    logger.error("Error collecting data for project '%s': %s", project_name, e)
                     # Continue with next project; don't block entire sync
                     continue
             
             return projects_data
             
         except Exception as e:
-            logger.error(f"Error collecting pending projects: {e}")
+            logger.error("Error collecting pending projects: %s", e)
             return []
 
     def _build_project_dict(self, project_name: str) -> Optional[dict]:
@@ -93,7 +93,7 @@ class ActivityCollector:
         # Get project metadata
         metadata = self._get_project_metadata(project_name)
         if not metadata:
-            logger.warning(f"Project '{project_name}' has no metadata; skipping")
+            logger.warning("Project '%s' has no metadata; skipping", project_name)
             return None
         
         # Get current LOC snapshots
@@ -106,7 +106,7 @@ class ActivityCollector:
         days = self._collect_daily_buckets(project_name)
         
         if not days:
-            logger.debug(f"Project '{project_name}' has no pending daily data")
+            logger.debug("Project '%s' has no pending daily data", project_name)
             return None
         
         return {

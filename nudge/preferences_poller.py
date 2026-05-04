@@ -134,6 +134,7 @@ class PreferencesPoller:
             return None
 
     def _load_local(self) -> Optional[UserPreferences]:
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path)
             cur = conn.execute(
@@ -141,19 +142,18 @@ class PreferencesPoller:
                 "FROM user_preferences WHERE id = 1"
             )
             row = cur.fetchone()
-            conn.close()
             if row:
                 return UserPreferences.from_row(row)
         except Exception:
-            # Don't silently swallow — when the local DB is unreadable we want
-            # operators to see WHY (locked, schema drift, missing column …).
-            # Returning None falls back to "treat remote as new", which is the
-            # safe default.
             logger.exception("[PreferencesPoller] Failed to read local preferences")
+        finally:
+            if conn:
+                conn.close()
         return None
 
     def _save_local(self, prefs: UserPreferences) -> None:
         """Write only the preference columns — never touches onboarding_completed_at."""
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path)
             # Ensure the row exists first (INSERT OR IGNORE leaves onboarding data intact)
@@ -180,9 +180,11 @@ class PreferencesPoller:
                 ),
             )
             conn.commit()
-            conn.close()
         except Exception:
             logger.exception("[PreferencesPoller] Failed to write local preferences")
+        finally:
+            if conn:
+                conn.close()
 
     @staticmethod
     def _differs(a: UserPreferences, b: Optional[UserPreferences]) -> bool:

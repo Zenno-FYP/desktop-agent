@@ -412,7 +412,9 @@ class DesktopAgent:
                         # Restart session if still on same app
                         if self.current_app:
                             self.current_session = ActivitySession(
-                                self.current_app, window_title,
+                                self.current_app,
+                                window_title,
+                                pid,
                                 idle_threshold_sec=self.idle_threshold_sec,
                                 metrics=self.metrics,
                                 config=self.config,
@@ -521,18 +523,15 @@ class DesktopAgent:
         if current_project:
             self.sticky_project_name = current_project
             self.sticky_last_seen = current_time
-            # print(f"[Sticky] Updated to project: {current_project}")
             return activity_data
         
         # Case 2: No project detected (generic app like browser)
         # Check if we can use sticky project
         if self._is_sticky_ttl_valid():
             activity_data['project_name'] = self.sticky_project_name
-            # print(f"[Sticky] Applied sticky project '{self.sticky_project_name}' to {current_app}")
         else:
             # TTL expired or no sticky project
             activity_data['project_name'] = None
-            # print(f"[Sticky] No valid sticky project for {current_app}")
         
         return activity_data
 
@@ -722,7 +721,7 @@ class DesktopAgent:
                 self.logger.info("[Agent] Syncing pending data before shutdown...")
                 self.activity_syncer.sync_activity()
         except Exception as e:
-            self.logger.warning(f"[Agent] Final ETL/sync failed: {e}")
+            self.logger.warning("[Agent] Final ETL/sync failed: %s", e)
 
         # Stop global listeners (this internally joins the MouseMovementSampler).
         try:

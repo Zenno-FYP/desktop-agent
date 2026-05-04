@@ -290,7 +290,7 @@ class NudgeContextAggregator:
             min_since_break = (now - last_break_ts).total_seconds() / 60
         else:
             # No break detected — proxy with total active time
-            min_since_break = sum(l["duration_sec"] for l in logs) / 60
+            min_since_break = sum(entry["duration_sec"] for entry in logs) / 60
 
         return min_since_break, has_taken_break, longest_break
 

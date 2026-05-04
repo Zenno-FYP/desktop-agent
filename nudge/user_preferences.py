@@ -198,6 +198,7 @@ class UserPreferences:
 
 def load_from_db(db_path: str) -> UserPreferences:
     """Return stored preferences or factory defaults if none exist."""
+    conn = None
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.execute(
@@ -205,11 +206,13 @@ def load_from_db(db_path: str) -> UserPreferences:
             "FROM user_preferences WHERE id = 1"
         )
         row = cur.fetchone()
-        conn.close()
         if row:
             return UserPreferences.from_row(row)
     except Exception:
         logger.warning("[UserPreferences] Could not load from DB — using defaults")
+    finally:
+        if conn:
+            conn.close()
     return UserPreferences()
 
 
@@ -247,6 +250,7 @@ def run_onboarding(db_path: str) -> UserPreferences:
     )
 
     # Persist to DB
+    conn = None
     try:
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -259,7 +263,6 @@ def run_onboarding(db_path: str) -> UserPreferences:
             prefs.to_db_tuple() + (datetime.now().isoformat(),),
         )
         conn.commit()
-        conn.close()
         logger.info(
             "[Onboarding] Saved preferences: schedule=%s focus=%s goal=%s sound=%s",
             prefs.work_schedule, prefs.focus_style,
@@ -267,5 +270,8 @@ def run_onboarding(db_path: str) -> UserPreferences:
         )
     except Exception:
         logger.exception("[Onboarding] Failed to save preferences to DB")
+    finally:
+        if conn:
+            conn.close()
 
     return prefs

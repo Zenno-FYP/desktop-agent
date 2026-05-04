@@ -516,7 +516,6 @@ ml_app_scoring:
   # Used in: Distracted context state
   # NOTE: App names are base names without .exe (extraction logic strips extensions)
   distraction_apps:
-    - discord
     - twitter
     - x
     - youtube

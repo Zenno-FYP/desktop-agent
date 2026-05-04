@@ -42,7 +42,6 @@ class ContextDetector:
         # SIGNAL 0: Typing Intensity (KPM) - per minute rate
         self.typing_kpm_flow_min = heuristics.get('typing_kpm_flow_min', 0)
         self.typing_kpm_research_max = heuristics.get('typing_kpm_research_max', 20)
-        self.typing_kpm_light_max = heuristics.get('typing_kpm_light_max', 15)
         
         # SIGNAL 1: Correction Ratio (primary differentiator)
         self.correction_ratio_debug_min = heuristics.get('correction_ratio_debug_min', 0.12)
