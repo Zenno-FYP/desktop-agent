@@ -1,7 +1,8 @@
 """NudgeScheduler — background timer that orchestrates the full nudge pipeline."""
-import time
 import logging
 import threading
+import time
+from dataclasses import replace
 from datetime import datetime
 
 from nudge.nudge_context_aggregator import NudgeContextAggregator
@@ -260,7 +261,6 @@ class NudgeScheduler:
         nudge_type = self._apply_diversity_guard(ctx)
 
         # ── Generate text ─────────────────────────────────────────────────
-        from dataclasses import replace
         ctx_for_gen = replace(ctx, recommended_nudge_type=nudge_type)
         nudge_text, llm_used = self.generator.generate(ctx_for_gen, persona=self._persona)
 

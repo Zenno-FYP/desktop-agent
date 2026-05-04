@@ -15,10 +15,14 @@ Used by both synthetic data generator and ML predictor.
   8. fatigue_hrs - Hours since day start (0-16 biological context)
 """
 
-import numpy as np
-from datetime import datetime
+import logging
 import os
+
+import numpy as np
 import yaml
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 class FeatureExtractor:
@@ -87,14 +91,14 @@ class FeatureExtractor:
                 # Build service score mapping (detected services → productivity scores)
                 cls._service_scores = cls._build_service_scores(ml_scoring)
                 
-                print(f"✅ App categories and browser detection loaded from config: {config_path}")
+                logger.info("App categories and browser detection loaded from config: %s", config_path)
             else:
                 # Config not found, use empty sets
                 cls._use_empty_categories()
-                print(f"⚠️  Config not found at {config_path}, using empty app categories")
+                logger.warning("Config not found at %s, using empty app categories", config_path)
         except Exception as e:
             # Error loading config, fall back to empty sets
-            print(f"⚠️  Error loading app categories from config: {e}, using empty app categories")
+            logger.warning("Error loading app categories from config: %s, using empty app categories", e)
             cls._use_empty_categories()
         finally:
             cls._config_loaded = True
@@ -352,9 +356,6 @@ class FeatureExtractor:
         # With this: app_score = 0.5 (neutral/research) → ML predicts Research
         #
         # Safety Check: Only upgrade if not gaming/high-intensity activity
-        mouse_velocity_px_per_sec = float(block_metrics.get('mouse_movement_distance', 0)) / max(total_duration_sec, 1)
-        mouse_cpm = float(block_metrics.get('mouse_click_rate', 0))
-        
         if (project_name is not None and isinstance(project_name, str) and 
             project_name.strip() and app_score < -0.5):
             # Sticky project is present AND app is marked as distraction

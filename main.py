@@ -86,6 +86,7 @@ def _mark_onboarding_done(db_path: str, prefs: UserPreferences) -> None:
     """Persist preferences and stamp onboarding_completed_at in the local DB."""
     import sqlite3
     from datetime import datetime
+    conn = None
     try:
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -98,10 +99,12 @@ def _mark_onboarding_done(db_path: str, prefs: UserPreferences) -> None:
             prefs.to_db_tuple() + (datetime.now().isoformat(),),
         )
         conn.commit()
-        conn.close()
         logger.info("[Main] Local user_preferences saved (onboarding complete)")
     except Exception:
         logger.exception("[Main] Failed to save preferences locally")
+    finally:
+        if conn:
+            conn.close()
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

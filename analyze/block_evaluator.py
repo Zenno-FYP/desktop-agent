@@ -388,8 +388,6 @@ class BlockEvaluator:
         Returns:
             Tuple of (context_state: str, confidence_score: float)
         """
-        from ml.feature_extractor import FeatureExtractor
-        
         # PRIORITY 0: IDLE CIRCUIT BREAKER
         # Extract idle_ratio to check if user is mostly idle
         idle_duration_sec = float(block_metrics.get('idle_duration_sec', 0))

@@ -132,33 +132,39 @@ class NudgeSyncer:
     def _fetch_pending_rows(self) -> list[dict]:
         cursor_id = self._get_cursor()
         conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cur = conn.execute(
-            """
-            SELECT nudge_id, generated_at, nudge_type, nudge_text,
-                   was_suppressed, suppression_reason
-            FROM nudge_log
-            WHERE nudge_id > ?
-            ORDER BY nudge_id ASC
-            LIMIT ?
-            """,
-            (cursor_id, _BATCH_SIZE),
-        )
-        rows = [dict(r) for r in cur.fetchall()]
-        conn.close()
+        try:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                """
+                SELECT nudge_id, generated_at, nudge_type, nudge_text,
+                       was_suppressed, suppression_reason
+                FROM nudge_log
+                WHERE nudge_id > ?
+                ORDER BY nudge_id ASC
+                LIMIT ?
+                """,
+                (cursor_id, _BATCH_SIZE),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+        finally:
+            conn.close()
         return rows
 
     def _get_cursor(self) -> int:
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path)
             cur = conn.execute("SELECT last_synced_nudge_id FROM nudge_sync_cursor WHERE id = 1")
             row = cur.fetchone()
-            conn.close()
             return row[0] if row else 0
         except Exception:
             return 0
+        finally:
+            if conn:
+                conn.close()
 
     def _advance_cursor(self, nudge_id: int) -> None:
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path)
             conn.execute(
@@ -166,11 +172,14 @@ class NudgeSyncer:
                 (nudge_id,),
             )
             conn.commit()
-            conn.close()
         except Exception:
             logger.exception("[NudgeSyncer] Failed to advance cursor")
+        finally:
+            if conn:
+                conn.close()
 
     def _ensure_cursor_table(self) -> None:
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path)
             conn.execute(
@@ -182,6 +191,8 @@ class NudgeSyncer:
                 """
             )
             conn.commit()
-            conn.close()
         except Exception:
             logger.exception("[NudgeSyncer] Failed to create cursor table")
+        finally:
+            if conn:
+                conn.close()

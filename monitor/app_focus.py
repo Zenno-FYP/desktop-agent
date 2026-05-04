@@ -35,7 +35,7 @@ def get_active_window():
         # Get process name
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
         h_process = ctypes.windll.kernel32.OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid_value
         )
         
         if h_process:

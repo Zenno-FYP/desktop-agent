@@ -1,4 +1,4 @@
-PyYAML
+PyYAML>=6.0
 keyboard>=0.13.5
 pynput>=1.7.6
 psutil>=5.9.0

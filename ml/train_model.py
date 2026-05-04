@@ -263,7 +263,7 @@ class MLModelTrainer:
         Make predictions using trained model.
         
         Args:
-            X (np.ndarray): Feature matrix (n_samples, 9)
+            X (np.ndarray): Feature matrix (n_samples, 8)
             
         Returns:
             np.ndarray: Predicted context states
@@ -278,7 +278,7 @@ class MLModelTrainer:
         Get prediction probabilities using trained model.
         
         Args:
-            X (np.ndarray): Feature matrix (n_samples, 9)
+            X (np.ndarray): Feature matrix (n_samples, 8)
             
         Returns:
             dict: Probabilities for each class

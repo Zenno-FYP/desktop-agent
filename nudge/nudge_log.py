@@ -69,16 +69,18 @@ class NudgeLog:
         """Return minutes since the last non-suppressed nudge (0 if none)."""
         try:
             conn = self._conn()
-            cur = conn.execute(
-                """
-                SELECT generated_at FROM nudge_log
-                WHERE was_suppressed = 0
-                ORDER BY nudge_id DESC
-                LIMIT 1
-                """
-            )
-            row = cur.fetchone()
-            conn.close()
+            try:
+                cur = conn.execute(
+                    """
+                    SELECT generated_at FROM nudge_log
+                    WHERE was_suppressed = 0
+                    ORDER BY nudge_id DESC
+                    LIMIT 1
+                    """
+                )
+                row = cur.fetchone()
+            finally:
+                conn.close()
             if not row:
                 return float("inf")
             last_dt = datetime.fromisoformat(row[0])
@@ -91,17 +93,19 @@ class NudgeLog:
         """Return the last n nudge types shown (for diversity check)."""
         try:
             conn = self._conn()
-            cur = conn.execute(
-                """
-                SELECT nudge_type FROM nudge_log
-                WHERE was_suppressed = 0
-                ORDER BY nudge_id DESC
-                LIMIT ?
-                """,
-                (n,),
-            )
-            rows = cur.fetchall()
-            conn.close()
+            try:
+                cur = conn.execute(
+                    """
+                    SELECT nudge_type FROM nudge_log
+                    WHERE was_suppressed = 0
+                    ORDER BY nudge_id DESC
+                    LIMIT ?
+                    """,
+                    (n,),
+                )
+                rows = cur.fetchall()
+            finally:
+                conn.close()
             return [r[0] for r in rows]
         except Exception:
             logger.exception("[NudgeLog] Failed to query recent nudge types")
@@ -112,17 +116,19 @@ class NudgeLog:
         today_str = datetime.now().strftime("%Y-%m-%d")
         try:
             conn = self._conn()
-            cur = conn.execute(
-                """
-                SELECT COUNT(*) FROM nudge_log
-                WHERE was_suppressed = 0
-                  AND nudge_type = ?
-                  AND DATE(generated_at) = ?
-                """,
-                (nudge_type, today_str),
-            )
-            row = cur.fetchone()
-            conn.close()
+            try:
+                cur = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM nudge_log
+                    WHERE was_suppressed = 0
+                      AND nudge_type = ?
+                      AND DATE(generated_at) = ?
+                    """,
+                    (nudge_type, today_str),
+                )
+                row = cur.fetchone()
+            finally:
+                conn.close()
             return row[0] if row else 0
         except Exception:
             logger.exception("[NudgeLog] Failed to count nudges today")
@@ -145,10 +151,13 @@ class NudgeLog:
 
     def _execute(self, sql: str, params: tuple) -> None:
         with self._lock:
+            conn = None
             try:
                 conn = self._conn()
                 conn.execute(sql, params)
                 conn.commit()
-                conn.close()
             except Exception:
                 logger.exception("[NudgeLog] DB write failed")
+            finally:
+                if conn:
+                    conn.close()
