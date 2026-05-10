@@ -71,6 +71,29 @@ This component bridges local runtime data with cloud-backed user experiences on 
 5. **Sync** pending records to backend.
 6. **Schedule nudges** and notify user.
 
+```mermaid
+flowchart TB
+  subgraph local["Local Windows runtime"]
+    AuthUI["auth/\npywebview + keyring"]
+    Mon["monitor/\nfocus + input + idle"]
+    An["analyze/\nheuristics + ML"]
+    Agg["aggregate/\nETL + LOC"]
+    DB[("SQLite\nzenno.db")]
+    Nudge["nudge/\nscheduler + notifier"]
+  end
+
+  Firebase["Firebase Auth"]
+  Backend["Backend API\nsync + prefs"]
+  NLP["NLP API\n/generate"]
+
+  AuthUI --> Firebase
+  Mon --> An --> Agg --> DB
+  Agg -->|activity sync| Backend
+  Nudge -->|poll prefs| Backend
+  Nudge -->|nudge copy| NLP
+  Nudge -->|desktop notifications| OS["OS notifications"]
+```
+
 ## Repository Structure
 
 - `main.py` - auth window + onboarding + agent bootstrap
